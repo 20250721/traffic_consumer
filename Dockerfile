@@ -18,4 +18,4 @@ EXPOSE 5001
 
 # 默认启动命令
 # 运行 traffic_consumer.py，它会默认启动Web UI
-CMD ["python", "traffic_consumer.py"]
+CMD ["python", "main.py"]
