@@ -4,10 +4,12 @@
 import threading
 import time
 import datetime
+import os
+import json
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from croniter import croniter
-from traffic_consumer import TrafficConsumer
+from traffic_consumer import TrafficConsumer, STATS_FILE
 
 # 初始化 Flask 和 SocketIO
 app = Flask(__name__)
@@ -20,6 +22,35 @@ consumer_thread = None
 status_thread = None
 status_thread_stop = threading.Event()
 log_enabled = False
+
+def load_history_from_stats():
+    """从stats.json加载历史运行记录"""
+    if not os.path.exists(STATS_FILE):
+        return []
+
+    try:
+        with open(STATS_FILE, 'r', encoding='utf-8') as f:
+            stats_data = json.load(f)
+
+        # 创建一个临时实例用于格式化字节数
+        temp_consumer = TrafficConsumer()
+
+        # 将stats.json中的每次运行转换为历史记录格式
+        history = []
+        for run_id, stats in sorted(stats_data.items(), key=lambda x: x[0], reverse=True):
+            record = {
+                "timestamp": stats.get('end_time') or stats.get('start_time'),
+                "result": "成功",  # 保存到stats的都是完成的任务
+                "bytes_consumed": temp_consumer.format_bytes(stats.get('total_bytes', 0)),
+                "download_count": stats.get('download_count', 0)
+            }
+            history.append(record)
+
+        # 限制历史记录数量
+        return history[:50]
+    except Exception as e:
+        print(f"加载历史记录失败: {e}")
+        return []
 
 def status_emitter():
     """定期向前端发送状态更新"""
@@ -63,6 +94,7 @@ def status_emitter():
                 'running': False,
                 'thread_status': {},
                 'thread_count': consumer_instance.threads if consumer_instance else 0,
+                'config': consumer_instance.config_name if consumer_instance else None,
                 'url_usage_stats': []
             })
         socketio.sleep(1)
@@ -81,15 +113,38 @@ def scheduler_status_emitter():
                         job_details = f"Cron: {consumer_instance.cron_expr}"
                     elif consumer_instance.interval:
                         job_details = f"Interval: {consumer_instance.interval} minutes"
-            
+
+            # 合并当前实例的历史记录和stats.json中的历史记录
+            current_history = consumer_instance.history if consumer_instance.history else []
+            stored_history = load_history_from_stats()
+
+            # 去重并合并（优先使用当前实例的记录）
+            all_history = current_history + stored_history
+            # 改进去重：将时间戳统一转换为秒级进行比较
+            seen_timestamps = set()
+            unique_history = []
+            for record in all_history:
+                ts = record.get('timestamp')
+                # 将时间戳标准化到秒级（去掉毫秒和T）
+                normalized_ts = ts.replace('T', ' ').split('.')[0] if ts else None
+                if normalized_ts not in seen_timestamps:
+                    seen_timestamps.add(normalized_ts)
+                    unique_history.append(record)
+
             status = {
                 'next_run_time': next_run_time,
                 'job_details': job_details,
-                'history': consumer_instance.history
+                'history': unique_history[:50]  # 限制50条
             }
             socketio.emit('scheduler_status_update', status)
         else:
-            socketio.emit('scheduler_status_update', {'next_run_time': None, 'job_details': None, 'history': []})
+            # 即使没有运行实例，也从stats.json加载历史记录
+            stored_history = load_history_from_stats()
+            socketio.emit('scheduler_status_update', {
+                'next_run_time': None,
+                'job_details': None,
+                'history': stored_history
+            })
         socketio.sleep(2) # 调度器状态不需要太频繁更新
 
 @app.route('/')
