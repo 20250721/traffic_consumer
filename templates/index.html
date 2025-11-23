@@ -211,16 +211,21 @@
                                     <input type="number" class="form-control form-control-sm" id="threads" placeholder="默认：4">
                                 </div>
                                 <div class="col-md-6">
-                                    <label for="url-strategy" class="form-label-sm">URL 策略</label>
-                                    <select class="form-select form-select-sm" id="url-strategy">
-                                        <option value="">默认（系统智能）</option>
-                                        <option value="random">随机均衡</option>
-                                        <option value="round_robin">轮询顺序</option>
-                                    </select>
+                                <label for="url-strategy" class="form-label-sm">URL 策略</label>
+                                <select class="form-select form-select-sm" id="url-strategy">
+                                    <option value="">默认（系统智能）</option>
+                                    <option value="random">随机均衡</option>
+                                    <option value="round_robin">轮询顺序</option>
+                                </select>
+                                <div class="form-check form-switch mt-2">
+                                    <input class="form-check-input" type="checkbox" id="auto-remove-failed-url">
+                                    <label class="form-check-label" for="auto-remove-failed-url">失败链接自动移除</label>
+                                    <div class="form-text">开启后，连续失败的 URL 会自动从该配置中删除。</div>
                                 </div>
                             </div>
                         </div>
                     </div>
+                </div>
                 </div>
                 <div class="col-lg-6">
                     <div class="config-section">

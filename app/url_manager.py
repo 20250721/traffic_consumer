@@ -138,6 +138,40 @@ class UrlManager:
 
         return all_invalid
 
+    def remove_url(self, url: str) -> bool:
+        """彻底移除指定 URL，返回是否发生变更。"""
+        if not url:
+            return False
+
+        with self._thread_lock:
+            indices = [idx for idx, value in enumerate(self.urls) if value == url]
+            if not indices:
+                return False
+
+            for idx in reversed(indices):
+                self.urls.pop(idx)
+
+            self._url_usage.pop(url, None)
+            self._invalid_urls.discard(url)
+            for thread_id, assigned_url in list(self._thread_assignments.items()):
+                if not assigned_url:
+                    continue
+                if assigned_url.startswith(url):
+                    self._thread_assignments[thread_id] = f"{url} (已移除)"
+
+        with self._weight_lock:
+            for idx in reversed(indices):
+                if 0 <= idx < len(self._url_weights):
+                    self._url_weights.pop(idx)
+
+        with self._counter_lock:
+            if self.urls:
+                self._counter %= len(self.urls)
+            else:
+                self._counter = 0
+
+        return True
+
     def _get_available_urls(self) -> List[str]:
         """获取仍可用的 URL 列表。"""
         with self._thread_lock:

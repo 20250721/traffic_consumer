@@ -63,6 +63,8 @@ def list_saved_configs() -> None:
 
         if config.get("cron_expr"):
             print(f"  Cron表达式: {config['cron_expr']}")
+        auto_remove = config.get("auto_remove_failed_url", False)
+        print(f"  失败链接自动移除: {'开启' if auto_remove else '关闭'}")
 
 
 def delete_config_entry(config_name: str) -> bool:
@@ -80,3 +82,32 @@ def delete_config_entry(config_name: str) -> bool:
 
     print(f"{Fore.YELLOW}配置 '{config_name}' 不存在{Style.RESET_ALL}")
     return False
+
+
+def remove_url_from_config(config_name: str, url: str) -> bool:
+    """从指定配置中移除给定 URL，返回是否发生变更。"""
+    if not url:
+        return False
+
+    config_data = read_json(CONFIG_FILE)
+    config = config_data.get(config_name)
+    if not config:
+        return False
+
+    updated = False
+    urls = config.get("urls")
+    if isinstance(urls, list):
+        new_urls = [item for item in urls if item != url]
+        if len(new_urls) != len(urls):
+            config["urls"] = new_urls
+            updated = True
+    elif isinstance(config.get("url"), str) and config.get("url") == url:
+        config["url"] = ""
+        updated = True
+
+    if not updated:
+        return False
+
+    config_data[config_name] = config
+    write_json(CONFIG_FILE, config_data)
+    return True

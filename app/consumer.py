@@ -22,6 +22,7 @@ from app.config_manager import (
     delete_config_entry,
     list_saved_configs,
     load_config_entry,
+    remove_url_from_config,
     save_config_entry,
 )
 from app.limiter import RateLimiter
@@ -37,8 +38,8 @@ class TrafficConsumer:
                  duration=None, count=None, cron_expr=None,
                  traffic_limit=None, interval=None,
                  config_name="default", url_strategy="random", logger=None, history_callback=None,
-                 invalid_url_callback=None):
-        self.urls = urls if urls else DEFAULT_URLS
+                 invalid_url_callback=None, auto_remove_failed_url=False):
+        initial_urls = list(urls) if urls else list(DEFAULT_URLS)
         self.threads = threads if threads is not None else 1
         self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
         self.duration = duration  # 持续时间，单位秒
@@ -48,9 +49,13 @@ class TrafficConsumer:
         self.interval = interval  # 间隔时间，单位分钟
         self.config_name = config_name if config_name else "default"
         self.url_strategy = url_strategy if url_strategy else "random"  # URL选择策略: "random" 或 "round_robin"
-        self.logger = logger if logger else self._default_logger
+        if logger:
+            self.logger = self._wrap_logger(logger)
+        else:
+            self.logger = self._default_logger
         self.history_callback = history_callback
         self.invalid_url_callback = invalid_url_callback
+        self.auto_remove_failed_url = bool(auto_remove_failed_url)
 
         # 网络与控制参数
         self.connect_timeout = 10
@@ -78,7 +83,7 @@ class TrafficConsumer:
 
         # 组合组件
         self.url_manager = UrlManager(
-            urls=self.urls,
+            urls=initial_urls,
             strategy=self.url_strategy,
             logger=self.logger,
             max_retries=self.max_retries,
@@ -89,12 +94,23 @@ class TrafficConsumer:
             history_callback=history_callback,
             history_limit=50,
         )
+        self.urls = self.url_manager.urls
 
     def _default_logger(self, message, color=None):
         if color:
             print(f"{color}{message}{Style.RESET_ALL}")
         else:
             print(message)
+
+    def _wrap_logger(self, logger_callable):
+        """兼容只接受单参数的日志函数。"""
+        def safe_logger(message, color=None):
+            try:
+                return logger_callable(message, color)
+            except TypeError:
+                payload = {"message": message, "color": color}
+                return logger_callable(payload)
+        return safe_logger
         
     def download_file(self, thread_id):
         """单个线程的下载函数"""
@@ -166,6 +182,8 @@ class TrafficConsumer:
 
                 if attempt >= self.max_retries:
                     all_invalid = self.url_manager.mark_url_invalid(url, exc)
+                    if self.auto_remove_failed_url:
+                        self._handle_auto_remove_failed_url(url)
                     if all_invalid:
                         self.active = False
                     return False
@@ -175,6 +193,19 @@ class TrafficConsumer:
                 attempt += 1
 
         return False
+
+    def _handle_auto_remove_failed_url(self, url):
+        """根据配置删除失效链接并持久化。"""
+        removed_runtime = self.url_manager.remove_url(url)
+        removed_config = False
+        if self.config_name:
+            removed_config = remove_url_from_config(self.config_name, url)
+
+        if removed_runtime or removed_config:
+            self.logger(
+                f"链接 {url} 失败后已自动移除，剩余 {len(self.urls)} 条可用链接",
+                Fore.YELLOW
+            )
 
 
     def _stream_download(self, session, url):
@@ -289,6 +320,7 @@ class TrafficConsumer:
             "cron_expr": self.cron_expr,
             "traffic_limit": self.traffic_limit,
             "interval": self.interval,
+            "auto_remove_failed_url": self.auto_remove_failed_url,
         }
         save_config_entry(self.config_name, payload)
 

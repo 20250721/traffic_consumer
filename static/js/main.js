@@ -20,7 +20,8 @@ document.addEventListener('DOMContentLoaded', (event) => {
         count: document.getElementById('count'),
         cron_expr: document.getElementById('cron-expr'),
         interval: document.getElementById('interval'),
-        url_strategy: document.getElementById('url-strategy')
+        url_strategy: document.getElementById('url-strategy'),
+        auto_remove_failed_url: document.getElementById('auto-remove-failed-url')
     };
     const jobDetailsEl = document.getElementById('job-details');
     const nextRunTimeEl = document.getElementById('next-run-time');
@@ -46,27 +47,6 @@ document.addEventListener('DOMContentLoaded', (event) => {
     let editorActiveConfig = null;
     let pendingConfigTarget = null;
     let pendingConfigName = null;
-
-    function ansiToHtml(text) {
-        const ansiToCss = {
-            '30': 'black',
-            '31': 'red',
-            '32': 'green',
-            '33': 'yellow',
-            '34': 'blue',
-            '35': 'magenta',
-            '36': 'cyan',
-            '37': 'white',
-            '90': 'grey'
-        };
-        return text.replace(/\u001b\[(\d+)m/g, (match, code) => {
-            if (code === '0') {
-                return '</span>';
-            }
-            const color = ansiToCss[code];
-            return color ? `<span style="color:${color}">` : '';
-        }).replace(/\u001b\[0m/g, '</span>');
-    }
 
     // --- Chart.js 初始化 ---
     const speedChartCtx = document.getElementById('speed-chart').getContext('2d');
@@ -240,7 +220,9 @@ document.addEventListener('DOMContentLoaded', (event) => {
         Object.keys(configInputs).forEach((key) => {
             const element = configInputs[key];
             if (!element) return;
-            if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+            if (element.type === 'checkbox') {
+                element.checked = false;
+            } else if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
                 element.value = '';
             } else {
                 element.value = '';
@@ -290,6 +272,9 @@ document.addEventListener('DOMContentLoaded', (event) => {
         if (configInputs.url_strategy) {
             configInputs.url_strategy.value = config.url_strategy ?? '';
         }
+        if (configInputs.auto_remove_failed_url) {
+            configInputs.auto_remove_failed_url.checked = Boolean(config.auto_remove_failed_url);
+        }
         editorActiveConfig = name || null;
         if (cronPreviewEl) {
             cronPreviewEl.innerHTML = '';
@@ -310,7 +295,8 @@ document.addEventListener('DOMContentLoaded', (event) => {
             count: config.count ?? null,
             cron_expr: config.cron_expr ?? null,
             interval: config.interval ?? null,
-            config_name: name || config.config_name || null
+            config_name: name || config.config_name || null,
+            auto_remove_failed_url: Boolean(config.auto_remove_failed_url)
         };
 
         payload.name = name || config.name || '';
@@ -696,19 +682,29 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
     });
 
-    socket.on('log_message', (data) => {
+    socket.on('log_message', (data = {}) => {
         if (!logSwitch.checked) return;
         const initialMessage = logContainer.querySelector('.text-muted');
         if (initialMessage) {
             initialMessage.remove();
         }
+
         const logEntry = document.createElement('p');
-        logEntry.className = 'mb-1';
-        const timestamp = `[${new Date().toLocaleTimeString()}] `;
-        logEntry.innerHTML = timestamp + ansiToHtml(data.message);
-        logContainer.append(logEntry); // Append to show latest at the bottom
-        
-        // Auto-scroll to the bottom
+        logEntry.className = 'mb-1 log-line';
+
+        const timestampSpan = document.createElement('span');
+        timestampSpan.className = 'text-muted me-2';
+        timestampSpan.textContent = `[${new Date().toLocaleTimeString()}]`;
+
+        const messageSpan = document.createElement('span');
+        messageSpan.textContent = data.message || '';
+        if (data.color) {
+            messageSpan.style.color = data.color;
+        }
+
+        logEntry.append(timestampSpan, messageSpan);
+        logContainer.append(logEntry);
+
         logContainer.scrollTop = logContainer.scrollHeight;
 
         while (logContainer.children.length > 200) {
@@ -765,6 +761,10 @@ document.addEventListener('DOMContentLoaded', (event) => {
             const element = configInputs[key];
             if (!element) {
                 raw[key] = null;
+                return;
+            }
+            if (element.type === 'checkbox') {
+                raw[key] = Boolean(element.checked);
                 return;
             }
             if (key === 'urls') {

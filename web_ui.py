@@ -6,9 +6,11 @@ import time
 import datetime
 import os
 import json
+import re
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from croniter import croniter
+from colorama import Fore
 
 from app.config import STATS_FILE
 from app.consumer import TrafficConsumer
@@ -24,6 +26,23 @@ consumer_thread = None
 status_thread = None
 status_thread_stop = threading.Event()
 log_enabled = False
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-9;]*m")
+COLOR_TO_CSS = {
+    Fore.RED: "#dc3545",
+    Fore.YELLOW: "#ffc107",
+    Fore.GREEN: "#198754",
+    Fore.CYAN: "#0dcaf0",
+    Fore.BLUE: "#0d6efd",
+    Fore.MAGENTA: "#d63384",
+    Fore.WHITE: "#f8f9fa",
+}
+
+
+def strip_ansi(text: str) -> str:
+    """移除ANSI颜色码，避免Web端出现控制字符。"""
+    if not text:
+        return ""
+    return ANSI_ESCAPE_RE.sub("", text)
 
 def load_history_from_stats():
     """从stats.json加载历史运行记录"""
@@ -201,8 +220,17 @@ def handle_start(data):
         return
 
     def log_emitter(message, color=None):
-        if log_enabled:
-            socketio.emit('log_message', {'message': message})
+        if isinstance(message, dict):
+            color = message.get('color', color)
+            message = message.get('message', '')
+        plain_message = strip_ansi(message or '')
+        color_value = COLOR_TO_CSS.get(color, color)
+        if not log_enabled:
+            return
+        payload = {'message': plain_message}
+        if color_value:
+            payload['color'] = color_value
+        socketio.emit('log_message', payload)
 
     def history_emitter(record):
         socketio.emit('history_update', record)
@@ -223,7 +251,8 @@ def handle_start(data):
         config_name=data.get('config_name'),
         logger=log_emitter,
         history_callback=history_emitter,
-        invalid_url_callback=invalid_url_emitter
+        invalid_url_callback=invalid_url_emitter,
+        auto_remove_failed_url=data.get('auto_remove_failed_url', False)
     )
 
     consumer_thread = threading.Thread(target=consumer_instance.start)
@@ -294,7 +323,8 @@ def handle_save_config(data):
         traffic_limit=config_data.get('traffic_limit'),
         cron_expr=config_data.get('cron_expr'),
         interval=config_data.get('interval'),
-        config_name=config_name
+        config_name=config_name,
+        auto_remove_failed_url=config_data.get('auto_remove_failed_url', False)
     )
     consumer.save_config()
     emit('status_update', {'message': f'配置 "{config_name}" 已保存。'})

@@ -32,6 +32,8 @@ def parse_args():
                       help="流量限制，单位MB (默认: 无限制)")
     parser.add_argument("--interval", type=int, default=None,
                       help="间隔执行时间，单位分钟，例如: 60 表示每60分钟执行一次 (默认: 无限制)")
+    parser.add_argument("--auto-remove-failed-url", action="store_true",
+                      help="下载失败超过重试次数后，自动从配置中移除对应URL (默认: 关闭)")
     
     # 配置管理
     parser.add_argument("--config", default="default",
@@ -88,6 +90,12 @@ def run_cli(args):
         urls = args.urls if args.urls else DEFAULT_URLS
 
     # 创建流量消耗器实例
+    auto_remove_flag = None
+    if config and "auto_remove_failed_url" in config:
+        auto_remove_flag = bool(config.get("auto_remove_failed_url"))
+    else:
+        auto_remove_flag = args.auto_remove_failed_url
+
     consumer = TrafficConsumer(
         urls=urls,
         url_strategy=config.get("url_strategy", args.url_strategy) if config else args.url_strategy,
@@ -98,7 +106,8 @@ def run_cli(args):
         cron_expr=config["cron_expr"] if config and "cron_expr" in config else args.cron,
         traffic_limit=config["traffic_limit"] if config and "traffic_limit" in config else args.traffic_limit,
         interval=config["interval"] if config and "interval" in config else args.interval,
-        config_name=args.config
+        config_name=args.config,
+        auto_remove_failed_url=auto_remove_flag
     )
     
     # 如果只是保存配置
