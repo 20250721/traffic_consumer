@@ -4,14 +4,12 @@
 """核心流量消耗逻辑与调度。"""
 
 import warnings
-import os
-import random
 import signal
 import sys
 import threading
 import time
 import http.client
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -19,9 +17,16 @@ from apscheduler.triggers.cron import CronTrigger
 from colorama import Fore, Style, init
 from requests.exceptions import ChunkedEncodingError, RequestException, Timeout
 
-from app.config import CONFIG_FILE, DEFAULT_CHUNK_SIZE, DEFAULT_URLS, STATS_FILE
+from app.config import DEFAULT_CHUNK_SIZE, DEFAULT_URLS
+from app.config_manager import (
+    delete_config_entry,
+    list_saved_configs,
+    load_config_entry,
+    save_config_entry,
+)
 from app.limiter import RateLimiter
-from app.storage import read_json, write_json
+from app.stats_manager import StatsManager, show_stats as show_stats_report
+from app.url_manager import UrlManager
 
 warnings.filterwarnings("ignore", category=UserWarning, module="apscheduler")
 init(autoreset=True)
@@ -56,7 +61,6 @@ class TrafficConsumer:
         self.rate_limiter = RateLimiter(int(self.limit_speed * 1024 * 1024)) if self.limit_speed > 0 else None
         self._traffic_limit_triggered = False
         self._count_limit_triggered = False
-        self.invalid_urls = set()
 
         # 统计数据
         self.lock = threading.Lock()
@@ -65,36 +69,26 @@ class TrafficConsumer:
         self.active = False
         self.download_count = 0
 
-        # 进度条
-        self.progress_bar = None
-
         # 调度器
         self.scheduler = None
-
-        # 历史统计数据
-        self.history = []
-        self.MAX_HISTORY_ENTRIES = 50  # 限制历史记录最大条数
 
         # 状态
         self.status = "初始化"
         self.next_run_time = None
 
-        # URL轮询计数器
-        self.url_counter = 0
-        self.url_counter_lock = threading.Lock()
-
-        # URL使用统计
-        self.url_usage = {url: 0 for url in self.urls}
-
-        # 线程当前使用的URL
-        self.thread_current_urls = {}
-
-        # 加权随机选择器 - 确保URL分布更均匀
-        self.url_weights = [1.0] * len(self.urls)  # 初始权重相等
-        self.weight_lock = threading.Lock()
-
-        # 线程URL分配记录（避免重复打印）
-        self.thread_url_assignments = {}
+        # 组合组件
+        self.url_manager = UrlManager(
+            urls=self.urls,
+            strategy=self.url_strategy,
+            logger=self.logger,
+            max_retries=self.max_retries,
+            invalid_url_callback=invalid_url_callback,
+        )
+        self.stats_manager = StatsManager(
+            logger=self.logger,
+            history_callback=history_callback,
+            history_limit=50,
+        )
 
     def _default_logger(self, message, color=None):
         if color:
@@ -102,90 +96,6 @@ class TrafficConsumer:
         else:
             print(message)
         
-    def get_url_for_thread(self, thread_id):
-        """为线程获取URL"""
-        available_urls = self._get_available_urls()
-        if not available_urls:
-            return None
-
-        if self.url_strategy == "random":
-            return self.weighted_random_choice(available_urls)
-        elif self.url_strategy == "round_robin":
-            with self.url_counter_lock:
-                for _ in range(len(self.urls)):
-                    url = self.urls[self.url_counter % len(self.urls)]
-                    self.url_counter += 1
-                    if url in self.invalid_urls:
-                        continue
-                    return url
-            # 如果轮询未命中有效URL，则回退到随机策略
-            return self.weighted_random_choice(available_urls)
-        else:
-            return available_urls[0]  # 默认返回第一个有效URL
-
-    def _get_available_urls(self):
-        """获取仍然有效的URL列表"""
-        with self.lock:
-            return [url for url in self.urls if url not in self.invalid_urls]
-
-    def weighted_random_choice(self, candidates):
-        """加权随机选择URL，确保分布更均匀"""
-        with self.weight_lock:
-            # 计算当前使用次数
-            total_usage = sum(self.url_usage.values())
-
-            if total_usage == 0:
-                # 如果还没有使用记录，完全随机选择
-                return random.choice(candidates)
-
-            # 计算期望的平均使用次数
-            expected_avg = total_usage / len(self.urls) if self.urls else 0
-
-            # 更新权重：使用次数越少的URL权重越高
-            for i, url in enumerate(self.urls):
-                current_usage = self.url_usage.get(url, 0)
-                if url in self.invalid_urls:
-                    self.url_weights[i] = 0.0
-                    continue
-                if expected_avg == 0:
-                    self.url_weights[i] = 1.0
-                    continue
-                # 权重与使用次数成反比，使用次数少的URL权重更高
-                if current_usage < expected_avg:
-                    self.url_weights[i] = expected_avg - current_usage + 1
-                else:
-                    self.url_weights[i] = 1.0 / (current_usage - expected_avg + 1)
-
-            weights = []
-            for url in candidates:
-                try:
-                    idx = self.urls.index(url)
-                    weights.append(self.url_weights[idx])
-                except ValueError:
-                    weights.append(1.0)
-
-            # 根据权重进行随机选择
-            return self.weighted_choice(candidates, weights)
-
-    def weighted_choice(self, choices, weights):
-        """根据权重进行随机选择"""
-        total_weight = sum(weights)
-        if total_weight == 0:
-            return random.choice(choices)
-
-        # 生成随机数
-        r = random.uniform(0, total_weight)
-
-        # 找到对应的选择
-        cumulative_weight = 0
-        for choice, weight in zip(choices, weights):
-            cumulative_weight += weight
-            if r <= cumulative_weight:
-                return choice
-
-        # 如果由于浮点数精度问题没有找到，返回最后一个
-        return choices[-1]
-
     def download_file(self, thread_id):
         """单个线程的下载函数"""
         session = self._create_session()
@@ -197,19 +107,13 @@ class TrafficConsumer:
                         self._stop_due_to_count()
                         break
 
-            current_url = self.get_url_for_thread(thread_id)
+            current_url = self.url_manager.get_url_for_thread(thread_id)
 
             if current_url is None:
                 self.logger("未找到可用的下载链接，任务将停止。", Fore.RED)
-                with self.lock:
-                    self.thread_current_urls[thread_id] = "无可用链接"
+                self.url_manager.set_thread_status(thread_id, "无可用链接")
                 self.active = False
                 break
-
-            with self.lock:
-                self.thread_current_urls[thread_id] = current_url
-                if current_url not in self.url_usage:
-                    self.url_usage[current_url] = 0
 
             completed = self._download_with_retries(session, current_url, thread_id)
 
@@ -219,7 +123,7 @@ class TrafficConsumer:
             if completed:
                 reached_count_limit = False
                 with self.lock:
-                    self.url_usage[current_url] += 1
+                    self.url_manager.record_success(current_url)
                     self.download_count += 1
                     if self.count is not None and self.download_count >= self.count:
                         reached_count_limit = True
@@ -261,7 +165,9 @@ class TrafficConsumer:
                 )
 
                 if attempt >= self.max_retries:
-                    self._mark_url_invalid(url, exc)
+                    all_invalid = self.url_manager.mark_url_invalid(url, exc)
+                    if all_invalid:
+                        self.active = False
                     return False
 
                 time.sleep(backoff)
@@ -270,52 +176,6 @@ class TrafficConsumer:
 
         return False
 
-    def _mark_url_invalid(self, url, error):
-        """在重试耗尽后标记URL为无效并通知外部回调"""
-        notify_callback = None
-        payload = None
-
-        with self.lock:
-            if url in self.invalid_urls:
-                return
-            self.invalid_urls.add(url)
-            for thread_id, assigned_url in list(self.thread_current_urls.items()):
-                if assigned_url == url:
-                    self.thread_current_urls[thread_id] = f"{url} (已失效)"
-            all_invalid = len(self.invalid_urls) == len(self.urls)
-
-        with self.weight_lock:
-            if url in self.urls:
-                try:
-                    idx = self.urls.index(url)
-                    self.url_weights[idx] = 0.0
-                except ValueError:
-                    pass
-
-        summary = f"链接 {url} 连续失败超过 {self.max_retries} 次，已标记为无效。"
-        if error:
-            summary += f" 错误信息: {error}"
-        self.logger(summary, Fore.RED)
-
-        if self.invalid_url_callback:
-            payload = {
-                "url": url,
-                "message": f"链接已连续失败 {self.max_retries} 次，已停止重试。",
-                "retries": self.max_retries
-            }
-            if error:
-                payload["error"] = str(error)
-            notify_callback = self.invalid_url_callback
-
-        if all_invalid:
-            self.logger("所有下载链接均已失效，任务即将停止。", Fore.RED)
-            self.active = False
-
-        if notify_callback and payload:
-            try:
-                notify_callback(payload)
-            except Exception as callback_exc:
-                self.logger(f"通知前端无效链接时出错: {callback_exc}", Fore.YELLOW)
 
     def _stream_download(self, session, url):
         """执行一次流式下载，返回是否完整结束"""
@@ -393,177 +253,33 @@ class TrafficConsumer:
     
     def display_stats(self):
         """显示流量消耗统计信息"""
-        last_bytes = 0
-
-        # 清屏并显示初始界面
-        self.clear_and_display_interface()
-
-        while self.active:
-            current_bytes = self.total_bytes
-            elapsed_time = time.time() - self.start_time
-
-            # 计算速度
-            bytes_diff = current_bytes - last_bytes
-            speed = bytes_diff / 1.0  # 1秒内的字节数
-
-            # 转换单位
-            total_str = self.format_bytes(current_bytes)
-            speed_str = self.format_bytes(speed) + "/s"
-
-            # 显示流量限制进度
-            traffic_limit_str = ""
-            if self.traffic_limit is not None:
-                progress = min(100, self.total_bytes / (self.traffic_limit * 1024 * 1024) * 100)
-                traffic_limit_str = f" | 流量限制: {progress:.1f}% ({total_str}/{self.format_bytes(self.traffic_limit * 1024 * 1024)})"
-
-            # 更新固定显示界面
-            self.update_display_interface(total_str, speed_str, traffic_limit_str, elapsed_time)
-
-            # 记录历史数据点（每10秒记录一次）
-            if int(elapsed_time) % 10 == 0 and int(elapsed_time) > 0:
-                self.history.append({
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "bytes": current_bytes,
-                    "speed": speed,
-                    "elapsed_seconds": int(elapsed_time),
-                    "download_count": self.download_count
-                })
-
-            last_bytes = current_bytes
-            time.sleep(1)
-        
-        # 最终统计
-        self.add_history_record("completed", self.total_bytes)
-        self.save_stats()
-        
-        elapsed_time = time.time() - self.start_time
-        avg_speed = self.total_bytes / elapsed_time if elapsed_time > 0 else 0
-        
-        avg_speed_str = self.format_bytes(avg_speed) + "/s"
-            
-        self.logger("\n\n=== 流量消耗统计 ===", Fore.CYAN)
-        self.logger(f"总消耗流量: {self.format_bytes(self.total_bytes)}", Fore.CYAN)
-        self.logger(f"平均速度: {avg_speed_str}", Fore.CYAN)
-        self.logger(f"总运行时间: {timedelta(seconds=int(elapsed_time))}", Fore.CYAN)
-        self.logger(f"总下载次数: {self.download_count}", Fore.CYAN)
-
-        # 显示URL使用统计
-        self.logger("\n=== URL使用统计 ===", Fore.CYAN)
-        self.logger(f"URL选择策略: {self.url_strategy}", Fore.CYAN)
-        for url, count in self.url_usage.items():
-            percentage = (count / self.download_count * 100) if self.download_count > 0 else 0
-            self.logger(f"  {url}: {count}次 ({percentage:.1f}%)", Fore.CYAN)
-
-        self.logger(f"\n统计数据已保存到: {STATS_FILE}", Fore.CYAN)
-        
-        # 如果有下一次执行时间，显示它
-        if self.next_run_time:
-            next_run = self.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
-            self.logger(f"下一次执行时间: {next_run}", Fore.CYAN)
+        self.stats_manager.display_stats(self, self.url_manager)
 
     def add_history_record(self, result, bytes_consumed):
         """添加一条历史记录"""
-        record = {
-            "timestamp": datetime.now().isoformat(),
-            "result": result,
-            "bytes_consumed": self.format_bytes(bytes_consumed),
-            "download_count": self.download_count
-        }
-        self.history.insert(0, record) # 插入到开头
-        # 限制历史记录的大小
-        if len(self.history) > self.MAX_HISTORY_ENTRIES:
-            self.history.pop()
-        
-        # 如果有回调，则调用它
-        if self.history_callback:
-            self.history_callback(record)
-
-    def clear_and_display_interface(self):
-        """清屏并显示固定界面"""
-        # 清屏
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-        # 显示标题和配置信息
-        print(f"{Fore.CYAN}流量消耗器启动{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}URLs ({len(self.urls)}个): {Style.RESET_ALL}")
-        for i, url in enumerate(self.urls, 1):
-            print(f"{Fore.CYAN}  {i}. {url}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}URL选择策略: {self.url_strategy}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}线程数: {self.threads}{Style.RESET_ALL}")
-
-        if self.limit_speed > 0:
-            print(f"{Fore.CYAN}限速: {self.limit_speed} MB/s{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.CYAN}限速: 无限制{Style.RESET_ALL}")
-
-        if self.duration:
-            print(f"{Fore.CYAN}持续时间: {timedelta(seconds=self.duration)}{Style.RESET_ALL}")
-        elif self.count:
-            print(f"{Fore.CYAN}下载次数: {self.count}{Style.RESET_ALL}")
-        elif self.traffic_limit:
-            print(f"{Fore.CYAN}流量限制: {self.traffic_limit} MB{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.CYAN}持续时间: 无限制 (按Ctrl+C停止){Style.RESET_ALL}")
-
-    def update_display_interface(self, total_str, speed_str, traffic_limit_str, elapsed_time):
-        """更新固定显示界面"""
-        # 移动光标到线程状态显示区域
-        self.logger(f"\n线程状态:", Fore.BLUE)
-
-        # 显示每个线程当前使用的URL
-        with self.lock:
-            for thread_id in range(1, self.threads + 1):
-                current_url = self.thread_current_urls.get(thread_id, "等待中...")
-                self.logger(f"线程 {thread_id} 当前使用URL: {current_url}", Fore.BLUE)
-
-        # 显示分隔线
-        self.logger(f"\n{'=' * 50}", Fore.CYAN)
-
-        # 显示统计信息
-        self.logger(f"已消耗: {total_str} | 速度: {speed_str}{traffic_limit_str} | "
-              f"运行时间: {timedelta(seconds=int(elapsed_time))} | "
-              f"下载次数: {self.download_count}", Fore.GREEN)
-
-        # 移动光标回到开始位置准备下次更新
-        # 计算需要向上移动的行数（线程数 + 4行固定内容）
-        lines_to_move_up = self.threads + 4
-        # print(f"\033[{lines_to_move_up}A", end="")  # 向上移动光标
+        self.stats_manager.add_history_record(result, bytes_consumed, self.download_count)
 
     def format_bytes(self, bytes_value):
         """格式化字节数为可读字符串"""
-        if bytes_value < 1024:
-            return f"{bytes_value:.2f} B"
-        elif bytes_value < 1024 * 1024:
-            return f"{bytes_value/1024:.2f} KB"
-        elif bytes_value < 1024 * 1024 * 1024:
-            return f"{bytes_value/(1024*1024):.2f} MB"
-        else:
-            return f"{bytes_value/(1024*1024*1024):.2f} GB"
-    
+        return self.stats_manager.format_bytes(bytes_value)
+
     def save_stats(self):
         """保存统计数据到文件"""
-        stats_data = read_json(STATS_FILE)
-        run_id = datetime.now().strftime("%Y%m%d%H%M%S")
-        stats_data[run_id] = {
-            "config_name": self.config_name,
-            "urls": self.urls,
-            "url_strategy": self.url_strategy,
-            "url_usage": self.url_usage,
-            "threads": self.threads,
-            "limit_speed": self.limit_speed,
-            "start_time": datetime.fromtimestamp(self.start_time).strftime("%Y-%m-%d %H:%M:%S") if self.start_time else None,
-            "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "total_bytes": self.total_bytes,
-            "download_count": self.download_count,
-            "elapsed_seconds": int(time.time() - self.start_time) if self.start_time else 0,
-            "history": self.history
-        }
-        write_json(STATS_FILE, stats_data)
+        self.stats_manager.save_stats(
+            config_name=self.config_name,
+            urls=self.urls,
+            url_strategy=self.url_strategy,
+            url_usage=self.url_manager.usage_snapshot(),
+            threads=self.threads,
+            limit_speed=self.limit_speed,
+            start_time=self.start_time,
+            total_bytes=self.total_bytes,
+            download_count=self.download_count,
+        )
     
     def save_config(self):
         """保存当前配置到文件"""
-        config_data = read_json(CONFIG_FILE)
-        config_data[self.config_name] = {
+        payload = {
             "urls": self.urls,
             "url_strategy": self.url_strategy,
             "threads": self.threads,
@@ -572,96 +288,29 @@ class TrafficConsumer:
             "count": self.count,
             "cron_expr": self.cron_expr,
             "traffic_limit": self.traffic_limit,
-            "interval": self.interval
+            "interval": self.interval,
         }
-        write_json(CONFIG_FILE, config_data)
-        print(f"{Fore.CYAN}配置 '{self.config_name}' 已保存{Style.RESET_ALL}")
-    
+        save_config_entry(self.config_name, payload)
+
     @staticmethod
     def load_config(config_name):
         """从文件加载配置"""
-        config_data = read_json(CONFIG_FILE)
-        if not config_data:
-            return None
+        return load_config_entry(config_name)
 
-        if config_name == '_all_':
-            return config_data
-
-        return config_data.get(config_name)
-    
     @staticmethod
     def list_configs():
         """列出所有保存的配置"""
-        config_data = read_json(CONFIG_FILE)
-        if not config_data:
-            print(f"{Fore.YELLOW}没有保存的配置{Style.RESET_ALL}")
-            return
+        list_saved_configs()
 
-        print(f"{Fore.CYAN}=== 保存的配置 ==={Style.RESET_ALL}")
-        for name, config in config_data.items():
-            print(f"\n{Fore.GREEN}配置名称: {name}{Style.RESET_ALL}")
-            # 兼容旧配置格式
-            if 'urls' in config:
-                print(f"  URLs: {config['urls']}")
-                print(f"  URL策略: {config.get('url_strategy', 'random')}")
-            elif 'url' in config:
-                print(f"  URL: {config['url']}")
-            print(f"  线程数: {config['threads']}")
-            print(f"  限速: {config['limit_speed']} MB/s (0表示不限速)")
-
-            if config['duration']:
-                print(f"  持续时间: {timedelta(seconds=config['duration'])}")
-            else:
-                print(f"  持续时间: 无限制")
-
-            if config['count']:
-                print(f"  下载次数: {config['count']}")
-            else:
-                print(f"  下载次数: 无限制")
-
-            if config['cron_expr']:
-                print(f"  Cron表达式: {config['cron_expr']}")
-    
     @staticmethod
     def delete_config(config_name):
         """删除指定的配置"""
-        config_data = read_json(CONFIG_FILE)
-        if not config_data:
-            print(f"{Fore.YELLOW}配置文件不存在{Style.RESET_ALL}")
-            return False
-
-        if config_name in config_data:
-            del config_data[config_name]
-            write_json(CONFIG_FILE, config_data)
-            print(f"{Fore.CYAN}配置 '{config_name}' 已删除{Style.RESET_ALL}")
-            return True
-
-        print(f"{Fore.YELLOW}配置 '{config_name}' 不存在{Style.RESET_ALL}")
-        return False
+        return delete_config_entry(config_name)
     
     @staticmethod
     def show_stats(limit=5):
         """显示历史统计数据"""
-        stats_data = read_json(STATS_FILE)
-        if not stats_data:
-            print(f"{Fore.YELLOW}没有历史统计数据{Style.RESET_ALL}")
-            return
-
-        sorted_runs = sorted(stats_data.items(), key=lambda x: x[1]['end_time'], reverse=True)
-        total = min(limit, len(sorted_runs))
-        print(f"{Fore.CYAN}=== 流量消耗历史记录 (最近 {total} 条) ==={Style.RESET_ALL}")
-
-        for i, (run_id, stats) in enumerate(sorted_runs[:limit]):
-            print(f"\n{Fore.GREEN}运行ID: {run_id}{Style.RESET_ALL}")
-            print(f"  配置名称: {stats.get('config_name', '默认')}")
-            print(f"  开始时间: {stats.get('start_time', 'N/A')}")
-            print(f"  结束时间: {stats.get('end_time', 'N/A')}")
-            print(f"  总消耗流量: {TrafficConsumer().format_bytes(stats.get('total_bytes', 0))}")
-            print(f"  下载次数: {stats.get('download_count', 0)}")
-            print(f"  运行时间: {timedelta(seconds=stats.get('elapsed_seconds', 0))}")
-
-            if i < len(sorted_runs) - 1:
-                print(f"{Fore.CYAN}------------------------{Style.RESET_ALL}")
+        show_stats_report(limit)
     
     def setup_scheduler(self):
         """设置调度器 (cron 或 interval)"""
@@ -735,8 +384,7 @@ class TrafficConsumer:
             self.total_bytes = 0
             self.start_time = time.time()
             self.download_count = 0
-            self.thread_current_urls = {}
-            self.url_usage = {url: 0 for url in self.urls}
+        self.url_manager.reset_runtime_state()
 
         # 记录任务开始
         start_bytes = self.total_bytes

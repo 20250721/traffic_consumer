@@ -59,8 +59,8 @@ def status_emitter():
     while not status_thread_stop.is_set():
         if consumer_instance and consumer_instance.active:
             with consumer_instance.lock:
-                thread_urls = consumer_instance.thread_current_urls.copy()
-                url_usage_snapshot = consumer_instance.url_usage.copy()
+                thread_urls = consumer_instance.url_manager.get_thread_snapshot(consumer_instance.threads)
+                url_usage_snapshot = consumer_instance.url_manager.usage_snapshot()
                 total_usage = sum(url_usage_snapshot.values())
                 url_usage_stats = []
                 if consumer_instance.urls:
@@ -117,7 +117,7 @@ def scheduler_status_emitter():
                         job_details = f"Interval: {consumer_instance.interval} minutes"
 
             # 合并当前实例的历史记录和stats.json中的历史记录
-            current_history = consumer_instance.history if consumer_instance.history else []
+            current_history = consumer_instance.stats_manager.history if consumer_instance.stats_manager.history else []
             stored_history = load_history_from_stats()
 
             # 去重并合并（优先使用当前实例的记录）
