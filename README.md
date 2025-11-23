@@ -1,338 +1,191 @@
 # 流量消耗器 (Traffic Consumer)
 
-一个简单高效的流量消耗工具，用于测试网络带宽和流量消耗。支持命令行模式和Web UI模式。
-## 目录
+多线程网络拉流与流量压测工具，支持限速、定时与多端可视化监控，适用于带宽压测、CDN 拉流验证、专线稳定性巡检等场景。
 
-- [功能特点](#功能特点)
-- [安装与使用](#安装与使用)
-  - [Docker 部署（推荐）](#docker-部署推荐)
-    - [拉取镜像](#拉取镜像)
-    - [运行容器](#运行容器)
-    - [管理容器](#管理容器)
-    - [数据持久化](#数据持久化)
-  - [本地运行](#本地运行)
-- [命令行参数](#命令行参数)
-- [Web UI 使用指南](#web-ui-使用指南)
-- [使用示例](#使用示例)
-- [配置管理](#配置管理)
-- [从源码构建](#从源码构建)
-- [贡献](#贡献)
-- [注意事项](#注意事项)
-- [许可证](#许可证)
+## 部署与运行
 
+### Docker 快速部署（推荐）
 
-## 功能特点
+Docker 镜像集成了全部依赖，适合快速上线或在多环境复用配置。
 
-- **双模式操作**: 支持传统的命令行界面和全新的Web UI界面。
-- **Web UI**: 通过浏览器轻松配置和监控流量消耗任务，实时查看状态、日志和线程详情。
-- **多线程下载**: 默认8线程，可自定义线程数。
-- **多URL支持**: 支持多个下载源，提高稳定性和速度。
-- **智能URL选择**: 支持随机和轮询两种URL选择策略。
-- **内存下载**: 不缓存到硬盘，纯内存操作。
-- **速度控制**: 可配置下载速度限制。
-- **流量统计**: 实时显示流量消耗和URL使用情况。
-- **定时执行**: 支持Cron表达式和间隔时间。
-- **灵活控制**: 支持设置持续时间、下载次数或流量限制。
-- **配置管理**: 保存和加载配置，支持多套配置方案。
-- **跨平台**: 支持Windows和Linux平台。
-- **Docker部署**: 提供Docker镜像，一键部署。
-
-## 安装与使用
-
-### Docker 部署（推荐）
-
-使用Docker是部署和运行流量消耗器最简单的方法。
-
-#### 拉取镜像
+#### 直接拉取镜像
 
 ```bash
 docker pull baitaotao521/traffic_consumer:latest
 ```
 
-#### 运行容器
-
-**Web UI 模式 (默认)**
+#### 启动 Web 控制台
 
 ```bash
-# 运行并在后台启动，将容器的5001端口映射到主机的5001端口
-docker run -d -p 5001:5001 --name traffic_consumer baitaotao521/traffic_consumer
-
-# 然后在浏览器中打开 http://主机ip:5001
+docker run -d \
+  -p 5001:5001 \
+  -v $HOME/.traffic_consumer_data:/root/.traffic_consumer \
+  --name traffic_consumer \
+  baitaotao521/traffic_consumer:latest
 ```
 
-**命令行模式**
+- 浏览器访问 `http://宿主机IP:5001` 即可使用控制台。
+- `-v` 将配置与统计落地到宿主机，避免容器删除导致数据丢失。
+- 默认以 Web 模式运行，适合图形化调度与监控。
+
+#### 切换命令行模式
 
 ```bash
-# 使用 --no-gui 参数启动命令行模式
-docker run -d --name traffic_consumer_cli baitaotao521/traffic_consumer --no-gui
+docker run -it --rm \
+  -v $HOME/.traffic_consumer_data:/root/.traffic_consumer \
+  baitaotao521/traffic_consumer:latest \
+  python traffic_consumer.py --no-gui --limit 5 --duration 600
 ```
 
-#### 管理容器
-
-- **查看日志**:
-  ```bash
-  # 实时查看Web UI模式的日志
-  docker logs -f traffic_consumer
-
-  # 实时查看命令行模式的日志
-  docker logs -f traffic_consumer_cli
-  ```
-
-- **停止容器**:
-  ```bash
-  docker stop traffic_consumer
-  ```
-
-- **启动容器**:
-  ```bash
-  docker start traffic_consumer
-  ```
-
-- **删除容器**:
-  ```bash
-  # 删除前请先停止容器
-  docker rm traffic_consumer
-  ```
-
-#### 数据持久化
-
-默认情况下，容器内的配置和统计数据是临时的，当容器被删除后数据会丢失。为了持久化保存数据，您可以将主机的目录挂载到容器的 `/root/.traffic_consumer` 目录。
+#### 常用容器管理命令
 
 ```bash
-# 在Linux/macOS上创建本地目录
-mkdir -p ~/.traffic_consumer_data
-
-# 在Windows (PowerShell)上创建本地目录
-New-Item -ItemType Directory -Force -Path $HOME\.traffic_consumer_data
-
-# 运行时挂载该目录 (示例为Linux/macOS)
-docker run -d -p 5001:5001 \
-  -v ~/.traffic_consumer_data:/root/.traffic_consumer \
-  --name traffic_consumer_persistent \
-  baitaotao521/traffic_consumer
+docker logs -f traffic_consumer        # 追踪日志
+docker stop traffic_consumer           # 停止容器
+docker start traffic_consumer          # 重新启动
+docker rm traffic_consumer             # 删除容器（需先停止）
 ```
-> **Windows用户请注意**:
-> 在 `cmd` 中，使用 `%USERPROFILE%\.traffic_consumer_data` 代替 `~/.traffic_consumer_data`。
-> 在 `PowerShell` 中，使用 `$HOME\.traffic_consumer_data`。
 
-这样，即使容器被删除和重建，您的配置和历史统计数据依然会保留在本地目录中。
+Windows PowerShell 可将数据目录映射为 `$HOME\.traffic_consumer_data`，CMD 则使用 `%USERPROFILE%\.traffic_consumer_data`。
 
-### 本地运行
+### Docker 镜像本地构建
 
-#### 1. 克隆仓库
+需要自定义基础镜像或调试最新代码时，可本地构建：
+
+```bash
+docker build -t traffic_consumer:local .
+docker run -p 5001:5001 traffic_consumer:local
+```
+
+如需无界面模式，可覆盖默认 CMD：
+
+```bash
+docker run -it traffic_consumer:local python traffic_consumer.py --no-gui
+```
+
+### 本地环境部署
+
+Docker 之外，仍可在本地直接运行：
 
 ```bash
 git clone https://github.com/baitaotao521/traffic_consumer.git
 cd traffic_consumer
-```
-
-#### 2. 安装依赖
-
-```bash
+python -m venv .venv
+.venv\Scripts\activate  # Windows PowerShell
+# source .venv/bin/activate  # Linux / macOS
+pip install -U pip
 pip install -r requirements.txt
-```
 
-#### 3. 运行
-
-**Web UI 模式 (默认)**
-
-```bash
+# 启动 Web 控制台
 python traffic_consumer.py
-# 在浏览器中打开 http://127.0.0.1:5001
+
+# 或启动命令行模式
+python traffic_consumer.py --no-gui --urls https://example.com/a.bin https://example.com/b.bin
 ```
 
-**命令行模式**
+## 项目简介
 
-```bash
-python traffic_consumer.py --no-gui [其他参数]
-```
+`traffic_consumer.py` 集成多线程下载、限速、调度与统计存储；`web_ui.py` 基于 Flask + Socket.IO 提供实时可视化与配置管理。通过令牌桶限速器、线程状态跟踪与 APScheduler 调度器，帮助运维/测试团队快速模拟大流量场景并收集反馈数据。
 
-## 命令行参数
+## 核心功能
 
-```
-usage: traffic_consumer.py [-h] [-u URLS [URLS ...]] [--url-strategy {random,round_robin}] [-t THREADS] [-l LIMIT] [-d DURATION] [-c COUNT] [--cron CRON] [--traffic-limit TRAFFIC_LIMIT] [--interval INTERVAL] [--config CONFIG] [--save-config]
-                           [--load-config] [--list-configs] [--delete-config] [--show-stats] [--stats-limit STATS_LIMIT] [--no-gui]
+- **双运行模式**：默认启动 Web 控制台，可通过 `--no-gui` 切换纯命令行。
+- **多线程拉流**：默认 8 线程，可按需调整并发、限速、次数、时长与总流量。
+- **灵活 URL 策略**：支持随机/轮询两种策略，自动统计各 URL 使用比例并识别失效链接。
+- **计划任务调度**：支持 Cron 与固定间隔两种调度方式，Web UI 显示下一次执行时间与倒计时。
+- **实时可视化**：速度折线图、线程饼图、URL 占比、调度历史、日志流等信息一览无余。
+- **配置与历史持久化**：所有配置、运行历史存储于主目录 `.traffic_consumer/`，方便跨模式复用。
+- **跨平台交付**：支持 Windows、Linux、macOS，提供 PyInstaller 打包与 Docker 镜像。
 
-流量消耗器 - 用于测试网络带宽和流量消耗
+## Web 控制台要点
 
-options:
-  -h, --help            show this help message and exit
-  -u URLS [URLS ...], --urls URLS [URLS ...]
-                        要下载的URL列表，可以指定多个URL (默认: 使用内置的2个测试URL)
-  --url-strategy {random,round_robin}
-                        URL选择策略: random(随机选择) 或 round_robin(轮询选择) (默认: random)
-  -t THREADS, --threads THREADS
-                        下载线程数 (默认: 8)
-  -l LIMIT, --limit LIMIT
-                        下载速度限制，单位MB/s，0表示不限速 (默认: 0)
-  -d DURATION, --duration DURATION
-                        持续时间，单位秒 (默认: 无限制)
-  -c COUNT, --count COUNT
-                        下载次数 (默认: 无限制)
-  --cron CRON           Cron表达式，格式: '分 时 日 月 周'，例如: '0 * * * *' 表示每小时执行一次
-  --traffic-limit TRAFFIC_LIMIT
-                        流量限制，单位MB (默认: 无限制)
-  --interval INTERVAL   间隔执行时间，单位分钟，例如: 60 表示每60分钟执行一次 (默认: 无限制)
-  --config CONFIG       配置名称 (默认: default)
-  --save-config         保存当前配置
-  --load-config         加载指定配置
-  --list-configs        列出所有保存的配置
-  --delete-config       删除指定配置
-  --show-stats          显示历史统计数据
-  --stats-limit STATS_LIMIT
-                        显示的历史统计数据条数 (默认: 5)
-  --no-gui              不启动Web UI，仅使用命令行
-```
+- **核心仪表盘**：实时展示总流量、瞬时速度、下载次数及当前配置。
+- **图表视图**：通过 Chart.js 呈现速度趋势、线程状态与 URL 使用占比。
+- **配置编辑器**：图形化维护 URLs、线程数、限速与停止条件，支持保存、载入和复制配置。
+- **调度与历史**：显示计划任务详情、下一次执行时间、倒计时与最近 50 条执行记录。
+- **实时日志**：按需开启 Socket 推送日志，支持 ANSI 颜色解析、自动滚动与清空。
+- **失效链接告警**：单个 URL 连续失败超限时自动推送高亮提示。
 
-## Web UI 使用指南
+## 调度与自动化
 
-Web UI 提供了一个美观且功能强大的图形化界面，让您可以更直观地配置和监控流量消耗任务。界面主要分为左右两个部分。
+- `--cron` 与 `--interval` 两种调度互斥，底层依赖 APScheduler。
+- Web UI 提供 Cron 预览接口，保存前可先查看未来 5 次触发时间。
+- 调度任务执行完毕后会写入历史记录并更新下一次触发时间；支持通过 Web UI 停止调度器。
 
-![Web UI Screenshot](https://raw.githubusercontent.com/baitaotao521/traffic_consumer/main/screenshots/web_ui_overview.png)
+## 配置、日志与历史数据
 
-### 左侧：核心仪表盘
+- 配置文件：`~/.traffic_consumer/config.json`
+- 历史统计：`~/.traffic_consumer/stats.json`
+- CLI 与 Web UI 共用同一套数据，可互相保存/载入。
+- 历史记录包含运行时间、流量、下载次数、URL 使用次数与线程状态快照。
+- `--show-stats` 可在命令行快速浏览最近执行概况。
 
-这是任务控制和状态监控的核心区域。
+## 命令行参数速查
 
--   **状态**: 显示任务是“运行中”还是“已停止”。
--   **实时数据**:
-    -   **实时速度**: 当前总下载速度。
-    -   **总消耗**: 本次任务已消耗的总流量。
-    -   **下载数**: 已完成的下载请求次数。
--   **配置加载**:
-    -   通过下拉菜单快速选择并加载已保存的配置。
--   **控制按钮**:
-    -   **启动**: 使用当前选定或编辑器中的配置来启动任务。
-    -   **停止**: 立即停止当前正在运行的任务。
-    -   **停止计划**: 如果任务是通过调度器（Cron或间隔）启动的，此按钮可以停止未来的计划任务，但不会影响当前正在运行的任务。
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `-u, --urls` | 下载 URL 列表，可指定多个 | 内置测试 URL |
+| `--url-strategy` | URL 选择策略：`random` / `round_robin` | `random` |
+| `-t, --threads` | 并发下载线程数 | `8` |
+| `-l, --limit` | 总体限速，单位 MB/s，`0` 为不限速 | `0` |
+| `-d, --duration` | 运行时长（秒） | 无限制 |
+| `-c, --count` | 下载次数 | 无限制 |
+| `--traffic-limit` | 消耗流量上限（MB） | 无限制 |
+| `--cron` | Cron 表达式定时执行 | 不启用 |
+| `--interval` | 固定间隔执行（分钟） | 不启用 |
+| `--config` | 配置名称 | `default` |
+| `--save-config` | 保存当前参数到配置文件 | 关闭 |
+| `--load-config` | 从配置文件加载参数 | 关闭 |
+| `--list-configs` | 列出所有配置 | 关闭 |
+| `--delete-config` | 删除指定配置 | 关闭 |
+| `--show-stats` | 输出历史统计 | 关闭 |
+| `--stats-limit` | 历史统计条目数 | `5` |
+| `--no-gui` | 禁用 Web UI，进入 CLI 模式 | 关闭 |
 
-### 右侧：信息中心
+## 架构与文件结构
 
-右侧包含一个实时速度图和带有多个选项卡的信息面板。
+- `traffic_consumer.py`：命令行入口，包含限速器、调度器、多线程逻辑与配置存储。
+- `web_ui.py`：Flask + Socket.IO 服务端，负责状态推送、配置 CRUD 与任务控制。
+- `static/`、`templates/`：前端静态资源与模板，包含 Chart.js 图表、日志面板与配置编辑器。
+- `.github/workflows/build-simple.yml`：CI/CD 工作流，构建多平台可执行文件与 Docker 镜像。
+- `build_config.py`：本地 PyInstaller 构建脚本，统一打包参数。
+- `Dockerfile`：容器镜像构建配置。
+- `requirements.txt`：Python 依赖清单。
+- `BUILD_GUIDE.md`：自动化构建与发布指南。
 
-#### 1. 实时速度图
+## 构建与发布
 
-一个动态图表，可视化展示最近30秒的下载速度变化趋势。
+- GitHub Actions 会在 push、tag 或手动触发时：
+  - 构建 Linux/Windows/macOS 单文件可执行程序；
+  - 构建并推送多架构 Docker 镜像；
+  - 若是标签发布，自动创建 Release 并附带产物。
+- 本地打包：`python build_config.py`
+- 手动 PyInstaller：`pyinstaller --onefile traffic_consumer.py`
+- 详细说明参考 [`BUILD_GUIDE.md`](BUILD_GUIDE.md)。
 
-#### 2. 信息选项卡
+## 测试与质量
 
--   **调度与历史**:
-    -   **调度状态**: 查看当前是否有计划任务，以及下次运行的时间和倒计时。
-    -   **执行历史**: 一个可滚动的表格，显示最近50次任务的执行记录，包括时间、结果和消耗的流量。
+- 建议使用 `pytest` 编写单元与集成测试，测试文件放入 `tests/` 目录。
+- 对限速器、调度器、配置持久化建议使用桩或模拟，避免真实网络请求开销。
+- 提交前运行 `pytest` 以及 `ruff`/`black` 等静态检查工具保持代码整洁。
 
--   **配置编辑器**:
-    这是创建和修改任务配置的核心区域，布局清晰，分为几个部分：
-    -   **配置名称**: 为您的配置命名，方便保存和识别。
-    -   **URLs**: 输入一个或多个下载链接，每行一个。
-    -   **基础设置**:
-        -   **线程数**: 设置并发下载的线程数量。
-        -   **限速 (MB/s)**: 设置总下载速度上限，0表示无限制。
-    -   **停止条件 (任一满足即停止)**:
-        -   **流量 (MB)**: 任务消耗的总流量上限。
-        -   **时长 (秒)**: 任务运行的总时长。
-        -   **下载数**: 总下载文件次数。
-    -   **调度设置 (二选一)**:
-        -   **间隔 (分钟)**: 设置任务循环执行的间隔。
-        -   **Cron 表达式**: 使用Cron语法设置更灵活的定时启动，提供常用预设和实时预览功能。
-    -   **保存配置**: 点击按钮将当前编辑器中的配置保存起来。
+## 常见问题
 
--   **实时日志**:
-    一个强大的日志查看器，用于调试和监控任务的详细过程。
-    -   **日志开关**: 默认关闭，需要手动开启才会从后端接收并显示日志，以节省浏览器资源。
-    -   **彩色输出**: 能够解析并显示带有 ANSI 颜色的日志，使输出更具可读性。
-    -   **自动滚动**: 新的日志会自动显示在底部，并使面板滚动到最新位置。
-    -   **清空按钮**: 快速清除所有日志。
-    -   **日志条数限制**: 为了防止浏览器卡顿，最多保留最新的200条日志。
+- **启动后没有进入 CLI？** 默认会运行 Web UI，需显式添加 `--no-gui`。
+- **速度显示为 0？线程全部空闲？** 检查 URL 是否有效，或是否提前触发限速 / 流量 / 次数上限。
+- **Cron 表达式报错？** 使用 Web UI 的 Cron 预览功能校验语法后再保存。
+- **日志过多导致浏览器卡顿？** Web UI 默认关闭日志推送，可按需开启，并提供清空按钮限制数量。
 
-## 使用示例
+## 贡献指南
 
-### 示例 1: 限制速度和时长
+欢迎通过 Issue 与 Pull Request 贡献改进：
 
-以最大 5 MB/s 的速度下载10分钟。
-
-```bash
-python traffic_consumer.py --limit 5 --duration 600
-```
-
-### 示例 2: 使用指定的URL列表和轮询策略
-
-使用您自己的两个URL，并采用轮询方式选择。
-
-```bash
-python traffic_consumer.py --urls http://example.com/file1.zip http://example.com/file2.zip --url-strategy round_robin
-```
-
-### 示例 3: 保存配置
-
-将当前参数保存为一个名为 `daily_test` 的配置。
-
-```bash
-python traffic_consumer.py -t 16 -l 10 --save-config --config daily_test
-# 这将保存一个16线程、10MB/s限速的配置，但不会立即运行。
-```
-
-### 示例 4: 加载并运行配置
-
-加载 `daily_test` 配置并立即开始任务。
-
-```bash
-python traffic_consumer.py --load-config --config daily_test
-```
-
-### 示例 5: 定时任务
-
-每天凌晨3点执行任务。
-
-> **常用 Cron 表达式推荐**:
-> - `0 * * * *` - 每小时的第0分钟执行 (即每小时整点)。
-> - `*/30 * * * *` - 每30分钟执行一次。
-> - `0 0 * * *` - 每天凌晨0点0分执行。
-> - `0 9-17 * * 1-5` - 周一至周五，上午9点到下午5点，每小时的第0分钟执行。
-> - `0 0 1 * *` - 每月1号的凌晨0点0分执行。
->
-> 您可以根据自己的需求调整这些表达式。
-
-```bash
-python traffic_consumer.py --load-config --config daily_test --cron "0 3 * * *"
-```
-
-## 配置管理
-
-该工具支持保存和加载多套配置方案，方便在不同测试场景下快速切换。
-
--   **配置文件位置**: 所有配置和历史数据都保存在用户主目录下的 `.traffic_consumer` 文件夹内。
-    -   配置文件: `~/.traffic_consumer/configs.json`
-    -   统计数据: `~/.traffic_consumer/stats.json`
--   **保存配置**: 使用 `--save-config` 会将命令行中提供的其他参数（如 `-t`, `-l`）以 `--config` 指定的名称保存。
--   **加载配置**: 使用 `--load-config` 会加载指定名称的配置并覆盖命令行中的其他参数。
--   **列出配置**: 使用 `--list-configs` 查看所有已保存的配置名称。
--   **删除配置**: 使用 `--delete-config` 删除一个指定的配置。
-
-## 从源码构建
-
-如果您想自行构建可执行文件或Docker镜像，请参考构建指南。
-
--   **构建指南**: [`BUILD_GUIDE.md`](./BUILD_GUIDE.md)
-
-## 贡献
-
-欢迎任何形式的贡献！
-
-1.  **报告问题**: 如果您发现任何错误或有功能建议，请随时[创建 Issue](https://github.com/baitaotao521/traffic_consumer/issues)。
-2.  **提交代码**:
-    -   Fork 本仓库。
-    -   创建您的功能分支 (`git checkout -b feature/AmazingFeature`)。
-    -   提交您的更改 (`git commit -m 'Add some AmazingFeature'`)。
-    -   将分支推送到远程 (`git push origin feature/AmazingFeature`)。
-    -   创建 Pull Request。
-
-## 注意事项
-
-1.  该工具会消耗大量网络流量，请确保您有足够的流量配额。
-2.  长时间运行可能会导致设备发热，请注意设备温度。
-3.  请合理使用，避免对网络造成不必要的负担。
-4.  配置文件和统计数据保存在用户主目录的`.traffic_consumer`文件夹中。
+1. Fork 仓库并创建特性分支（`git checkout -b feat/my-feature`）。
+2. 根据 Conventional Commits 准则编写提交信息。
+3. 补充或更新相关测试、文档、截图。
+4. 在 PR 中说明动机、验证步骤与影响范围。
 
 ## 许可证
 
-MIT
+本项目采用 MIT License 发布，欢迎在遵循协议的前提下自由使用与二次开发。
+

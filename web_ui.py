@@ -9,7 +9,9 @@ import json
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from croniter import croniter
-from traffic_consumer import TrafficConsumer, STATS_FILE
+
+from app.config import STATS_FILE
+from app.consumer import TrafficConsumer
 
 # 初始化 Flask 和 SocketIO
 app = Flask(__name__)
@@ -158,7 +160,7 @@ def preview_cron():
     cron_expr = request.json.get('cron_expr')
     if not cron_expr or not croniter.is_valid(cron_expr):
         return jsonify({'error': '无效的Cron表达式'}), 400
-    
+
     now = datetime.datetime.now()
     try:
         itr = croniter(cron_expr, now)
@@ -223,7 +225,7 @@ def handle_start(data):
         history_callback=history_emitter,
         invalid_url_callback=invalid_url_emitter
     )
-    
+
     consumer_thread = threading.Thread(target=consumer_instance.start)
     consumer_thread.daemon = True
     consumer_thread.start()
@@ -281,7 +283,7 @@ def handle_save_config(data):
     """保存配置"""
     config_name = data.get('name')
     config_data = data.get('data')
-    
+
     consumer = TrafficConsumer(
         urls=config_data.get('urls'),
         url_strategy=config_data.get('url_strategy'),
