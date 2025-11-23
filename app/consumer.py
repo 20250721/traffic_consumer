@@ -111,6 +111,10 @@ class TrafficConsumer:
                 payload = {"message": message, "color": color}
                 return logger_callable(payload)
         return safe_logger
+
+    def _reset_limit_flags(self):
+        self._traffic_limit_triggered = False
+        self._count_limit_triggered = False
         
     def download_file(self, thread_id):
         """单个线程的下载函数"""
@@ -416,6 +420,7 @@ class TrafficConsumer:
             self.total_bytes = 0
             self.start_time = time.time()
             self.download_count = 0
+        self._reset_limit_flags()
         self.url_manager.reset_runtime_state()
 
         # 记录任务开始
@@ -440,6 +445,7 @@ class TrafficConsumer:
 
     def _run_task(self):
         """执行一次完整的下载任务"""
+        self._reset_limit_flags()
         self.active = True
         self.start_time = time.time()
         self.status = "正在执行"
