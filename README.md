@@ -31,6 +31,9 @@
 - **调度自动化**：Cron 与固定间隔二选一，带未来触发预览与单击停止。
 - **持久化存储**：配置与统计写入 `~/.traffic_consumer/`，Web/CLI 共享。
 - **跨平台交付**：提供 Docker 镜像、PyInstaller 打包脚本与 GitHub Actions 工作流。
+<img width="1637" height="1097" alt="image" src="https://github.com/user-attachments/assets/0001c675-4bcf-4d60-9c78-bae0bf9a378a" />
+<img width="1637" height="1097" alt="image" src="https://github.com/user-attachments/assets/e7bf32d8-8d94-4057-941a-7bfbd287a845" />
+<img width="1637" height="1097" alt="image" src="https://github.com/user-attachments/assets/68ec0d76-8e59-4cc8-9bea-18ebcc5c0967" />
 
 ---
 
