@@ -7,47 +7,51 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-executables:
-    name: Build Executable for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        # 降级Python 3.10（兼容pkg_resources+各平台打包）
-        os: [ubuntu-latest, windows-latest, macos-latest]
 
-    steps:
-    - uses: actions/checkout@v4
+# #####  
+#   build-executables:
+#     name: Build Executable for ${{ matrix.os }}
+#     runs-on: ${{ matrix.os }}
+#     strategy:
+#       matrix:
+#         # 降级Python 3.10（兼容pkg_resources+各平台打包）
+#         os: [ubuntu-latest, windows-latest, macos-latest]
 
-    - name: Set up Python 3.10  # 关键：降级到3.10，避免3.12的兼容问题
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-        cache: 'pip'  # 缓存依赖，加速构建
+#     steps:
+#     - uses: actions/checkout@v4
 
-    - name: Install dependencies  # 关键：强制安装setuptools+wheel
-      run: |
-        python -m pip install --upgrade pip setuptools wheel
-        pip install -r requirements.txt
-        pip install pyinstaller
-      shell: pwsh
+#     - name: Set up Python 3.10  # 关键：降级到3.10，避免3.12的兼容问题
+#       uses: actions/setup-python@v4
+#       with:
+#         python-version: '3.10'
+#         cache: 'pip'  # 缓存依赖，加速构建
 
-    - name: Build executable
-      run: |
-        $separator = if ("${{ runner.os }}" -eq "Windows") {";"} else {":"}
-        $addData = "--add-data `"templates${separator}templates`""
-        $pyinstaller_command = "python -m PyInstaller --onefile --clean --noconfirm --name traffic_consumer_${{ runner.os }} --hidden-import=engineio.async_drivers.threading --hidden-import=pkg_resources ${addData} traffic_consumer.py"
-        if ("${{ runner.os }}" -eq "Windows") {
-          $pyinstaller_command += " --hidden-import=win32timezone"
-        }
-        Invoke-Expression $pyinstaller_command
-      shell: pwsh
+#     - name: Install dependencies  # 关键：强制安装setuptools+wheel
+#       run: |
+#         python -m pip install --upgrade pip setuptools wheel
+#         pip install -r requirements.txt
+#         pip install pyinstaller
+#       shell: pwsh
 
-    - name: Upload executable artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: traffic_consumer_${{ runner.os }}
-        path: dist/traffic_consumer_${{ runner.os }}${{ runner.os == 'Windows' && '.exe' || '' }}
-  
+#     - name: Build executable
+#       run: |
+#         $separator = if ("${{ runner.os }}" -eq "Windows") {";"} else {":"}
+#         $addData = "--add-data `"templates${separator}templates`""
+#         $pyinstaller_command = "python -m PyInstaller --onefile --clean --noconfirm --name traffic_consumer_${{ runner.os }} --hidden-import=engineio.async_drivers.threading --hidden-import=pkg_resources ${addData} traffic_consumer.py"
+#         if ("${{ runner.os }}" -eq "Windows") {
+#           $pyinstaller_command += " --hidden-import=win32timezone"
+#         }
+#         Invoke-Expression $pyinstaller_command
+#       shell: pwsh
+
+#     - name: Upload executable artifact
+#       uses: actions/upload-artifact@v4
+#       with:
+#         name: traffic_consumer_${{ runner.os }}
+#         path: dist/traffic_consumer_${{ runner.os }}${{ runner.os == 'Windows' && '.exe' || '' }}
+
+# #####
+
   build-and-push-docker:
     name: Build and Push Docker Image to GHCR
     runs-on: ubuntu-latest
@@ -82,26 +86,26 @@ jobs:
             ghcr.io/${{ github.actor }}/traffic_consumer:latest
             ghcr.io/${{ github.actor }}/traffic_consumer:${{ github.ref_name }}
 
-  create-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-executables, build-and-push-docker]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
+  # create-release:
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   needs: [build-executables, build-and-push-docker]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #   - name: Download all artifacts
+  #     uses: actions/download-artifact@v4
+  #     with:
+  #       path: artifacts
 
-    - name: List downloaded files
-      run: ls -R artifacts
+  #   - name: List downloaded files
+  #     run: ls -R artifacts
 
-    - name: Create release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          artifacts/traffic_consumer_Linux/traffic_consumer_Linux
-          artifacts/traffic_consumer_Windows/traffic_consumer_Windows.exe
-          artifacts/traffic_consumer_macOS/traffic_consumer_macOS
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #   - name: Create release
+  #     uses: softprops/action-gh-release@v2
+  #     with:
+  #       files: |
+  #         artifacts/traffic_consumer_Linux/traffic_consumer_Linux
+  #         artifacts/traffic_consumer_Windows/traffic_consumer_Windows.exe
+  #         artifacts/traffic_consumer_macOS/traffic_consumer_macOS
+  #       generate_release_notes: true
+  #     env:
+  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
