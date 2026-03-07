@@ -87,7 +87,7 @@ python traffic_consumer.py --no-gui # CLI
 - **实时日志**：按需订阅 Socket 日志推送，前端负责渲染颜色，避免 ANSI 乱码。
 - **失效告警**：URL 连续失败达到阈值后触发通知，并可自动从运行实例/配置文件移除。
 
-### 命令行
+<!-- ### 命令行
 
 ```bash
 python traffic_consumer.py \
@@ -103,7 +103,7 @@ python traffic_consumer.py \
 - 使用 `--save-config/--load-config` 管理持久化配置；`--show-stats` 快速查看历史。
 - 按 `Ctrl+C` 可随时停止，历史与统计仍会写入本地。
 
----
+--- -->
 
 ## ⚙️ 配置与自动化
 
