@@ -1,41 +1,27 @@
-# # 使用轻量的Python 3.12 slim镜像
-# FROM python:3.12-slim
-
-# # 设置工作目录
-# WORKDIR /app
-
-# # 复制依赖文件
-# COPY requirements.txt .
-
-# # 安装依赖
-# RUN pip install --no-cache-dir -r requirements.txt
-
-# # 复制所有项目文件到工作目录
-# COPY . .
-
-# # 暴露Web UI端口
-# EXPOSE 5001
-
-# # 默认启动命令
-# # 运行 traffic_consumer.py，它会默认启动Web UI
-# CMD ["python", "main.py"]
-
-
-
-# 基础镜像
-FROM python:3.12-slim
+# 接收Actions传递的Python版本参数，默认3.10
+ARG PYTHON_VERSION=3.10
+FROM python:${PYTHON_VERSION}-slim
 
 # 设置工作目录
 WORKDIR /app
 
-# 先安装基础依赖（修复pkg_resources缺失）
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# 安装系统依赖（避免编译失败）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# 复制依赖文件并安装项目依赖
+# 接收setuptools版本参数，强制安装
+ARG SETUPTOOLS_VERSION=65.0.0
+RUN pip install --no-cache-dir --upgrade pip \
+    setuptools==${SETUPTOOLS_VERSION} \
+    wheel \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 安装项目依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制所有项目文件到容器
+# 复制项目文件
 COPY . .
 
 # 暴露端口
