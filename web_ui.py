@@ -62,8 +62,9 @@ def strip_ansi(text: str) -> str:
         return ""
     return ANSI_ESCAPE_RE.sub("", text)
 
-def load_history_from_stats():
-    """从stats.json加载历史运行记录"""
+
+def load_stats_records():
+    """从 stats.json 读取原始执行记录，并补齐前端展示字段。"""
     if not os.path.exists(STATS_FILE):
         return []
 
@@ -71,25 +72,52 @@ def load_history_from_stats():
         with open(STATS_FILE, 'r', encoding='utf-8') as f:
             stats_data = json.load(f)
 
-        # 创建一个临时实例用于格式化字节数
         temp_consumer = TrafficConsumer()
-
-        # 将stats.json中的每次运行转换为历史记录格式
-        history = []
+        records = []
         for run_id, stats in sorted(stats_data.items(), key=lambda x: x[0], reverse=True):
+            total_bytes = int(stats.get('total_bytes', 0) or 0)
             record = {
+                "run_id": run_id,
+                "config_name": stats.get('config_name') or 'default',
+                "start_time": stats.get('start_time'),
+                "end_time": stats.get('end_time') or stats.get('start_time'),
                 "timestamp": stats.get('end_time') or stats.get('start_time'),
-                "result": "成功",  # 保存到stats的都是完成的任务
-                "bytes_consumed": temp_consumer.format_bytes(stats.get('total_bytes', 0)),
-                "download_count": stats.get('download_count', 0)
+                "result": stats.get('result', '成功'),
+                "total_bytes": total_bytes,
+                "bytes_consumed": temp_consumer.format_bytes(total_bytes),
+                "download_count": int(stats.get('download_count', 0) or 0),
+                "elapsed_seconds": int(stats.get('elapsed_seconds', 0) or 0),
             }
-            history.append(record)
-
-        # 限制历史记录数量
-        return history[:50]
+            records.append(record)
+        return records
     except Exception as e:
         print(f"加载历史记录失败: {e}")
         return []
+
+
+def load_history_from_stats():
+    """从 stats.json 加载历史运行记录。"""
+    try:
+        return load_stats_records()[:50]
+    except Exception as e:
+        print(f"加载历史记录失败: {e}")
+        return []
+
+
+def build_stats_summary_by_config():
+    """按配置聚合历史统计，供计划列表展示累计流量与下载数。"""
+    summary = {}
+    for record in load_stats_records():
+        config_name = record.get('config_name') or 'default'
+        item = summary.setdefault(config_name, {
+            'total_bytes_raw': 0,
+            'download_count': 0,
+            'history': [],
+        })
+        item['total_bytes_raw'] += int(record.get('total_bytes', 0) or 0)
+        item['download_count'] += int(record.get('download_count', 0) or 0)
+        item['history'].append(record)
+    return summary
 
 
 def build_consumer_kwargs(config_name, config_data, **callbacks):
@@ -183,6 +211,104 @@ def get_runtime_snapshot():
             for record in records
         ),
     }
+
+
+def build_plan_summary(record, stats_summary_map=None):
+    """生成单个运行计划的摘要信息，供列表和详情弹窗使用。"""
+    consumer = record.get('consumer')
+    if not consumer:
+        return None
+
+    scheduler = consumer.scheduler
+    next_run_time = None
+    if scheduler and scheduler.running:
+        job = scheduler.get_job('traffic_consumer_job')
+        if job and job.next_run_time:
+            next_run_time = job.next_run_time.isoformat()
+
+    stats_history = list(consumer.stats_manager.history or [])
+    stats_summary_map = stats_summary_map or build_stats_summary_by_config()
+    stats_summary = stats_summary_map.get(consumer.config_name, {})
+    history_total_bytes = int(stats_summary.get('total_bytes_raw', 0) or 0)
+    history_download_count = int(stats_summary.get('download_count', 0) or 0)
+    total_bytes_raw = history_total_bytes + int(consumer.total_bytes or 0)
+    total_download_count = history_download_count + int(consumer.download_count or 0)
+
+    return {
+        'name': consumer.config_name,
+        'running': bool(consumer.active),
+        'scheduler_running': bool(scheduler and scheduler.running),
+        'next_run_time': next_run_time,
+        'total_bytes': consumer.format_bytes(total_bytes_raw),
+        'total_bytes_raw': total_bytes_raw,
+        'download_count': total_download_count,
+        'threads': consumer.threads,
+        'url_count': len(consumer.urls or []),
+        'cron_expr': consumer.cron_expr,
+        'interval': consumer.interval,
+        'auto_start': consumer.auto_start,
+        'url_strategy': consumer.url_strategy,
+        'stats_history': stats_history,
+    }
+
+
+def get_plan_summaries():
+    """收集所有运行中的计划摘要。"""
+    snapshot = get_runtime_snapshot()
+    stats_summary_map = build_stats_summary_by_config()
+    plans = []
+    for record in snapshot['records']:
+        summary = build_plan_summary(record, stats_summary_map=stats_summary_map)
+        if summary:
+            plans.append(summary)
+    return plans
+
+
+def _collect_plan_detail_history(config_name):
+    """汇总某个计划的执行历史，优先从内存态与 stats.json 合并。"""
+    target = str(config_name or "").strip()
+    if not target:
+        return []
+
+    merged = []
+    seen = set()
+
+    snapshot = get_runtime_snapshot()
+    for record in snapshot['records']:
+        consumer = record.get('consumer')
+        if not consumer or consumer.config_name != target:
+            continue
+        for item in list(consumer.stats_manager.history or []):
+            key = item.get('timestamp')
+            normalized = key.replace('T', ' ').split('.')[0] if key else None
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(item)
+
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, 'r', encoding='utf-8') as f:
+                stats_data = json.load(f)
+            for run_id, stats in sorted(stats_data.items(), key=lambda x: x[0], reverse=True):
+                if stats.get('config_name') != target:
+                    continue
+                record = {
+                    "timestamp": stats.get('end_time') or stats.get('start_time'),
+                    "result": stats.get('result', '成功'),
+                    "bytes_consumed": TrafficConsumer().format_bytes(stats.get('total_bytes', 0)),
+                    "download_count": stats.get('download_count', 0),
+                }
+                key = record.get('timestamp')
+                normalized = key.replace('T', ' ').split('.')[0] if key else None
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                merged.append(record)
+        except Exception:
+            pass
+
+    return merged[:50]
 
 
 def stop_runtime_config(config_name, wait_thread=False):
@@ -320,11 +446,11 @@ def scheduler_status_emitter():
     while not status_thread_stop.is_set():
         snapshot = get_runtime_snapshot()
         records = snapshot['records']
+        plans = get_plan_summaries()
 
         if records:
             next_run_time = None
             job_details_list = []
-            current_history = []
 
             for record in records:
                 instance = record['consumer']
@@ -338,37 +464,18 @@ def scheduler_status_emitter():
                         job_details_list.append(f"{instance.config_name}: Cron {instance.cron_expr}")
                     elif instance.interval:
                         job_details_list.append(f"{instance.config_name}: Interval {instance.interval} 分钟")
-                if instance.stats_manager.history:
-                    current_history.extend(instance.stats_manager.history)
-
-            stored_history = load_history_from_stats()
-
-            # 去重并合并（优先使用当前实例的记录）
-            all_history = current_history + stored_history
-            # 改进去重：将时间戳统一转换为秒级进行比较
-            seen_timestamps = set()
-            unique_history = []
-            for record in all_history:
-                ts = record.get('timestamp')
-                # 将时间戳标准化到秒级（去掉毫秒和T）
-                normalized_ts = ts.replace('T', ' ').split('.')[0] if ts else None
-                if normalized_ts not in seen_timestamps:
-                    seen_timestamps.add(normalized_ts)
-                    unique_history.append(record)
 
             status = {
                 'next_run_time': next_run_time,
                 'job_details': ' | '.join(job_details_list) if job_details_list else None,
-                'history': unique_history[:50]  # 限制50条
+                'plans': plans,
             }
             socketio.emit('scheduler_status_update', status)
         else:
-            # 即使没有运行实例，也从stats.json加载历史记录
-            stored_history = load_history_from_stats()
             socketio.emit('scheduler_status_update', {
                 'next_run_time': None,
                 'job_details': None,
-                'history': stored_history
+                'plans': [],
             })
         socketio.sleep(2) # 调度器状态不需要太频繁更新
 
@@ -554,7 +661,7 @@ def handle_stop():
         socketio.emit('scheduler_status_update', {
             'next_run_time': None,
             'job_details': None,
-            'history': load_history_from_stats()
+            'plans': get_plan_summaries(),
         })
     else:
         emit('error', {'message': '流量消耗器未在运行。'})
@@ -568,10 +675,53 @@ def handle_stop_scheduler():
         socketio.emit('scheduler_status_update', {
             'next_run_time': None,
             'job_details': None,
-            'history': load_history_from_stats()
+            'plans': get_plan_summaries(),
         })
     else:
         emit('error', {'message': '调度器未在运行。'})
+
+
+@socketio.on('stop_runtime_plan')
+def handle_stop_runtime_plan(data):
+    """停止单个运行计划。"""
+    config_name = (data or {}).get('name')
+    if not config_name:
+        emit('error', {'message': '请选择要停止的计划。'})
+        return
+
+    if stop_runtime_config(config_name, wait_thread=True):
+        snapshot = get_runtime_snapshot()
+        plans = get_plan_summaries()
+        next_run_time = None
+        job_details_list = []
+        for record in snapshot['records']:
+            instance = record.get('consumer')
+            if not instance or not instance.scheduler or not instance.scheduler.running:
+                continue
+            job = instance.scheduler.get_job('traffic_consumer_job')
+            if job and job.next_run_time:
+                candidate_time = job.next_run_time.isoformat()
+                if next_run_time is None or candidate_time < next_run_time:
+                    next_run_time = candidate_time
+            if instance.cron_expr:
+                job_details_list.append(f"{instance.config_name}: Cron {instance.cron_expr}")
+            elif instance.interval:
+                job_details_list.append(f"{instance.config_name}: Interval {instance.interval} 分钟")
+
+        emit('status_update', {
+            'running': snapshot['has_active_download'] or snapshot['has_active_scheduler'],
+            'config': ', '.join(snapshot['config_names']) if snapshot['config_names'] else None,
+            'thread_count': snapshot['thread_count'],
+            'message': f'计划 "{config_name}" 已停止。'
+        })
+        socketio.emit('scheduler_status_update', {
+            'next_run_time': next_run_time,
+            'job_details': ' | '.join(job_details_list) if job_details_list else None,
+            'plans': plans,
+        })
+        socketio.emit('runtime_plans', {'plans': plans})
+    else:
+        emit('error', {'message': f'计划 "{config_name}" 未在运行。'})
 
 @socketio.on('get_configs')
 def handle_get_configs():
@@ -590,6 +740,71 @@ def handle_get_config_details(data):
     config = TrafficConsumer.load_config(config_name)
     if config:
         emit('config_details', {'name': config_name, 'config': config, 'target': target})
+
+
+@socketio.on('get_runtime_plans')
+def handle_get_runtime_plans():
+    """获取运行中的计划列表。"""
+    emit('runtime_plans', {'plans': get_plan_summaries()})
+
+
+@socketio.on('get_plan_detail')
+def handle_get_plan_detail(data):
+    """获取指定计划的历史详情。"""
+    config_name = (data or {}).get('name')
+    config = TrafficConsumer.load_config(config_name)
+    if not config:
+        emit('error', {'message': '计划不存在或已被删除。'})
+        return
+
+    # 读取当前运行态或持久化配置的详情
+    snapshot = get_runtime_snapshot()
+    detail_consumer = None
+    for record in snapshot['records']:
+        consumer = record.get('consumer')
+        if consumer and consumer.config_name == config_name:
+            detail_consumer = consumer
+            break
+
+    next_run_time = None
+    running = False
+    scheduler_running = False
+    total_bytes = 0
+    download_count = 0
+    threads = config.get('threads')
+    stats_summary = build_stats_summary_by_config().get(config_name, {})
+    history_total_bytes = int(stats_summary.get('total_bytes_raw', 0) or 0)
+    history_download_count = int(stats_summary.get('download_count', 0) or 0)
+    if detail_consumer:
+        running = bool(detail_consumer.active)
+        scheduler_running = bool(detail_consumer.scheduler and detail_consumer.scheduler.running)
+        total_bytes = history_total_bytes + int(detail_consumer.total_bytes or 0)
+        download_count = history_download_count + int(detail_consumer.download_count or 0)
+        threads = detail_consumer.threads
+        if detail_consumer.scheduler and detail_consumer.scheduler.running:
+            job = detail_consumer.scheduler.get_job('traffic_consumer_job')
+            if job and job.next_run_time:
+                next_run_time = job.next_run_time.isoformat()
+    else:
+        total_bytes = history_total_bytes
+        download_count = history_download_count
+
+    emit('plan_detail', {
+        'name': config_name,
+        'config': config,
+        'summary': {
+            'running': running,
+            'scheduler_running': scheduler_running,
+            'next_run_time': next_run_time,
+            'total_bytes': TrafficConsumer().format_bytes(total_bytes),
+            'total_bytes_raw': total_bytes,
+            'download_count': download_count,
+            'threads': threads,
+            'cron_expr': config.get('cron_expr'),
+            'interval': config.get('interval'),
+        },
+        'history': _collect_plan_detail_history(config_name),
+    })
 
 @socketio.on('save_config')
 def handle_save_config(data):
@@ -635,7 +850,7 @@ def handle_delete_config(data):
         socketio.emit('scheduler_status_update', {
             'next_run_time': None,
             'job_details': None,
-            'history': load_history_from_stats()
+            'plans': get_plan_summaries(),
         })
     else:
         emit('error', {'message': f'配置 "{config_name}" 不存在。'})

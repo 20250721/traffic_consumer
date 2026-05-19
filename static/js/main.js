@@ -30,14 +30,12 @@ document.addEventListener('DOMContentLoaded', (event) => {
         thread_start_delay: document.getElementById('thread-start-delay')
     };
     const jobDetailsEl = document.getElementById('job-details');
-    const nextRunTimeEl = document.getElementById('next-run-time');
-    const countdownEl = document.getElementById('countdown');
-    const historyTableBody = document.getElementById('history-table-body');
     const cronPreviewEl = document.getElementById('cron-preview');
     const logSwitch = document.getElementById('log-switch');
     const logContainer = document.getElementById('log-container');
     const clearLogBtn = document.getElementById('clear-log-btn');
     const editorConfigSelect = document.getElementById('config-editor-select');
+    const configEditorEl = document.getElementById('config-editor');
     const resetConfigBtn = document.getElementById('reset-config-btn');
     const threadStatusList = document.getElementById('thread-status-list');
     const urlUsageList = document.getElementById('url-usage-list');
@@ -47,6 +45,13 @@ document.addEventListener('DOMContentLoaded', (event) => {
     const totalThreadCountEl = document.getElementById('total-thread-count');
     const erroredThreadCountEl = document.getElementById('errored-thread-count');
     const currentConfigEl = document.getElementById('current-config');
+    const runtimePlanListEl = document.getElementById('runtime-plan-list');
+    const planDetailModalEl = document.getElementById('plan-detail-modal');
+    const planDetailNameEl = document.getElementById('plan-detail-name');
+    const planDetailNextRunEl = document.getElementById('plan-detail-next-run');
+    const planDetailTotalEl = document.getElementById('plan-detail-total');
+    const planDetailHistoryBody = document.getElementById('plan-detail-history-body');
+    const planDetailModal = planDetailModalEl ? bootstrap.Modal.getOrCreateInstance(planDetailModalEl) : null;
 
     let selectedConfigName = null;
     let selectedConfigDetail = null;
@@ -632,10 +637,155 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
     }
 
+    function formatDateTime(value) {
+        if (!value) return '无';
+        let date = null;
+        if (value instanceof Date) {
+            date = value;
+        } else if (typeof value === 'string') {
+            const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+            date = new Date(normalized);
+        } else {
+            date = new Date(value);
+        }
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+            return String(value);
+        }
+        return date.toLocaleString();
+    }
+
+    function formatPlanSchedule(plan = {}) {
+        if (plan.cron_expr) {
+            return `Cron ${plan.cron_expr}`;
+        }
+        if (plan.interval) {
+            return `每 ${plan.interval} 分钟`;
+        }
+        return '手动任务';
+    }
+
+    function renderDetailHistory(history = []) {
+        if (!planDetailHistoryBody) return;
+        planDetailHistoryBody.innerHTML = '';
+        if (!Array.isArray(history) || history.length === 0) {
+            planDetailHistoryBody.innerHTML = '<tr class="no-history"><td colspan="4" class="text-center text-muted py-3">暂无执行记录。</td></tr>';
+            return;
+        }
+
+        history.forEach((item) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>${formatDateTime(item.timestamp)}</td><td>${item.result || '未知'}</td><td>${item.bytes_consumed || '0 B'}</td><td>${item.download_count ?? 0}</td>`;
+            planDetailHistoryBody.appendChild(row);
+        });
+    }
+
+    function renderPlanDetail(payload = {}) {
+        const summary = payload.summary || {};
+        if (planDetailNameEl) {
+            planDetailNameEl.textContent = payload.name || '-';
+        }
+        if (planDetailNextRunEl) {
+            planDetailNextRunEl.textContent = formatDateTime(summary.next_run_time);
+        }
+        if (planDetailTotalEl) {
+            planDetailTotalEl.textContent = `${summary.total_bytes || '0 B'} / ${summary.download_count ?? 0}`;
+        }
+        renderDetailHistory(payload.history || []);
+        if (planDetailModal) {
+            planDetailModal.show();
+        }
+    }
+
+    function renderRuntimePlans(plans = []) {
+        if (!runtimePlanListEl) return;
+        runtimePlanListEl.innerHTML = '';
+
+        if (!Array.isArray(plans) || plans.length === 0) {
+            runtimePlanListEl.innerHTML = '<div class="text-muted small py-2">暂无运行计划。</div>';
+            return;
+        }
+
+        plans.forEach((plan) => {
+            const card = document.createElement('div');
+            card.className = 'plan-card';
+
+            const header = document.createElement('div');
+            header.className = 'plan-card-header';
+
+            const meta = document.createElement('div');
+            const title = document.createElement('div');
+            title.className = 'plan-card-title';
+            title.textContent = plan.name || '未命名计划';
+
+            const subtitle = document.createElement('div');
+            subtitle.className = 'plan-card-subtitle';
+            const runState = plan.running ? '执行中' : (plan.scheduler_running ? '等待调度' : '已停止');
+            subtitle.textContent = `${formatPlanSchedule(plan)} · ${runState}`;
+
+            meta.appendChild(title);
+            meta.appendChild(subtitle);
+
+            const badge = document.createElement('span');
+            badge.className = `badge ${plan.running ? 'bg-success' : (plan.scheduler_running ? 'bg-info text-dark' : 'bg-secondary')}`;
+            badge.textContent = plan.running ? '运行中' : (plan.scheduler_running ? '计划中' : '已停止');
+
+            header.appendChild(meta);
+            header.appendChild(badge);
+
+            const metrics = document.createElement('div');
+            metrics.className = 'plan-card-metrics';
+            metrics.innerHTML = `
+                <div class="plan-card-metric">
+                    <span class="label">下次执行</span>
+                    <span class="value">${formatDateTime(plan.next_run_time)}</span>
+                </div>
+                <div class="plan-card-metric">
+                    <span class="label">累计流量</span>
+                    <span class="value">${plan.total_bytes || '0 B'}</span>
+                </div>
+                <div class="plan-card-metric">
+                    <span class="label">累计下载数</span>
+                    <span class="value">${plan.download_count ?? 0}</span>
+                </div>
+                <div class="plan-card-metric">
+                    <span class="label">线程 / 链接</span>
+                    <span class="value">${plan.threads ?? 0} / ${plan.url_count ?? 0}</span>
+                </div>
+            `;
+
+            const actions = document.createElement('div');
+            actions.className = 'plan-card-actions';
+
+            const detailBtn = document.createElement('button');
+            detailBtn.type = 'button';
+            detailBtn.className = 'btn btn-sm btn-outline-primary';
+            detailBtn.dataset.planAction = 'detail';
+            detailBtn.dataset.planName = plan.name || '';
+            detailBtn.textContent = '查看详情';
+
+            const stopBtnEl = document.createElement('button');
+            stopBtnEl.type = 'button';
+            stopBtnEl.className = 'btn btn-sm btn-outline-danger';
+            stopBtnEl.dataset.planAction = 'stop';
+            stopBtnEl.dataset.planName = plan.name || '';
+            stopBtnEl.textContent = '停止该计划';
+            stopBtnEl.disabled = !(plan.running || plan.scheduler_running);
+
+            actions.appendChild(detailBtn);
+            actions.appendChild(stopBtnEl);
+
+            card.appendChild(header);
+            card.appendChild(metrics);
+            card.appendChild(actions);
+            runtimePlanListEl.appendChild(card);
+        });
+    }
+
     // --- Socket.IO 事件处理 ---
     socket.on('connect', () => {
         console.log('已连接到服务器');
         socket.emit('get_configs');
+        socket.emit('get_runtime_plans');
     });
 
     socket.on('configs_list', (data) => {
@@ -768,16 +918,6 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
     });
 
-    socket.on('history_update', (record) => {
-        const row = historyTableBody.insertRow(0);
-        row.innerHTML = `<td>${new Date(record.timestamp).toLocaleString()}</td><td>${record.result}</td><td>${record.bytes_consumed}</td><td>${record.download_count || 'N/A'}</td>`;
-        const noHistoryRow = historyTableBody.querySelector('.no-history');
-        if (noHistoryRow) noHistoryRow.remove();
-        while (historyTableBody.rows.length > 50) {
-            historyTableBody.deleteRow(historyTableBody.rows.length - 1);
-        }
-    });
-
     socket.on('log_message', (data = {}) => {
         if (!logSwitch.checked) return;
         const initialMessage = logContainer.querySelector('.text-muted');
@@ -816,41 +956,20 @@ document.addEventListener('DOMContentLoaded', (event) => {
         });
     });
 
-    let countdownInterval;
+    socket.on('runtime_plans', (data = {}) => {
+        renderRuntimePlans(data.plans || []);
+    });
+
+    socket.on('plan_detail', (data = {}) => {
+        renderPlanDetail(data);
+    });
+
     socket.on('scheduler_status_update', (data) => {
         jobDetailsEl.textContent = data.job_details || '无';
-        stopSchedulerBtn.disabled = !data.job_details;
+        stopSchedulerBtn.disabled = !data.job_details && !(Array.isArray(data.plans) && data.plans.some((plan) => plan.scheduler_running));
 
-        if (data.next_run_time) {
-            const nextRunDate = new Date(data.next_run_time);
-            nextRunTimeEl.textContent = nextRunDate.toLocaleString();
-            if (countdownInterval) clearInterval(countdownInterval);
-            countdownInterval = setInterval(() => {
-                const diff = nextRunDate - new Date();
-                if (diff <= 0) {
-                    countdownEl.textContent = '运行中...';
-                    clearInterval(countdownInterval);
-                    return;
-                }
-                const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
-                const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
-                const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
-                countdownEl.textContent = `${h}:${m}:${s}`;
-            }, 1000);
-        } else {
-            nextRunTimeEl.textContent = '无';
-            countdownEl.textContent = '无';
-            if (countdownInterval) clearInterval(countdownInterval);
-        }
-
-        historyTableBody.innerHTML = '';
-        if (data.history && data.history.length > 0) {
-            data.history.forEach(item => {
-                const row = historyTableBody.insertRow();
-                row.innerHTML = `<td>${new Date(item.timestamp).toLocaleString()}</td><td>${item.result}</td><td>${item.bytes_consumed}</td><td>${item.download_count || 'N/A'}</td>`;
-            });
-        } else {
-            historyTableBody.innerHTML = '<tr class="no-history text-center"><td colspan="4">暂无历史记录</td></tr>';
+        if (Array.isArray(data.plans)) {
+            renderRuntimePlans(data.plans);
         }
 
         if (data.message) {
@@ -931,6 +1050,36 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     stopSchedulerBtn.addEventListener('click', () => socket.emit('stop_scheduler'));
 
+    if (runtimePlanListEl) {
+        runtimePlanListEl.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-plan-action]');
+            if (!button) return;
+
+            const planName = button.dataset.planName || '';
+            const action = button.dataset.planAction;
+            if (!planName) {
+                pushAlert({
+                    message: '无法识别目标计划。',
+                    title: '提示：',
+                    variant: 'warning'
+                });
+                return;
+            }
+
+            if (action === 'detail') {
+                socket.emit('get_plan_detail', { name: planName });
+                return;
+            }
+
+            if (action === 'stop') {
+                if (!window.confirm(`确定停止计划 "${planName}" 吗？`)) {
+                    return;
+                }
+                socket.emit('stop_runtime_plan', { name: planName });
+            }
+        });
+    }
+
     if (deleteConfigBtn) {
         deleteConfigBtn.addEventListener('click', () => {
             const targetName = editorActiveConfig || selectedConfigName || (configInputs.name && configInputs.name.value.trim());
@@ -983,6 +1132,23 @@ document.addEventListener('DOMContentLoaded', (event) => {
                 return;
             }
             requestConfigDetails(value, 'editor');
+        });
+    }
+
+    if (configEditorEl) {
+        configEditorEl.addEventListener('show.bs.offcanvas', () => {
+            const preferredName = selectedConfigName || editorActiveConfig || '';
+            if (preferredName) {
+                if (editorConfigSelect) {
+                    editorConfigSelect.value = preferredName;
+                }
+                requestConfigDetails(preferredName, 'editor');
+                return;
+            }
+            if (editorConfigSelect) {
+                editorConfigSelect.value = '';
+            }
+            resetConfigForm(true);
         });
     }
 

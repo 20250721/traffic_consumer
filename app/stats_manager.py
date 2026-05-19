@@ -103,6 +103,7 @@ class StatsManager:
             start_time=consumer.start_time,
             total_bytes=consumer.total_bytes,
             download_count=consumer.download_count,
+            result="成功",
         )
 
         elapsed_time = time.time() - consumer.start_time
@@ -154,6 +155,7 @@ class StatsManager:
         start_time: Optional[float],
         total_bytes: int,
         download_count: int,
+        result: Optional[str] = None,
     ) -> None:
         """将当前运行信息写入统计文件。"""
         stats_data = read_json(STATS_FILE)
@@ -172,6 +174,7 @@ class StatsManager:
             "total_bytes": total_bytes,
             "download_count": download_count,
             "elapsed_seconds": int(time.time() - start_time) if start_time else 0,
+            "result": result or "成功",
             "history": self.history,
         }
         write_json(STATS_FILE, stats_data)
@@ -262,6 +265,7 @@ def show_stats(limit: int = 5) -> None:
         print(f"  配置名称: {stats.get('config_name', '默认')}")
         print(f"  开始时间: {stats.get('start_time', 'N/A')}")
         print(f"  结束时间: {stats.get('end_time', 'N/A')}")
+        print(f"  结果: {stats.get('result', '成功')}")
         print(f"  总消耗流量: {StatsManager.format_bytes(stats.get('total_bytes', 0))}")
         print(f"  下载次数: {stats.get('download_count', 0)}")
         print(f"  运行时间: {timedelta(seconds=stats.get('elapsed_seconds', 0))}")

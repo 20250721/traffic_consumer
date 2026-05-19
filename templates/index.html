@@ -148,14 +148,17 @@
                     <div class="card-body tab-content" id="info-tab-content">
                         <!-- 调度与历史面板 -->
                         <div class="tab-pane fade show active" id="scheduler-panel" role="tabpanel">
-                            <p><strong>当前任务:</strong> <span id="job-details" class="fw-bold">无</span></p>
-                            <p><strong>下次运行:</strong> <span id="next-run-time" class="fw-bold">无</span> | <strong>倒计时:</strong> <span id="countdown" class="fw-bold">无</span></p>
-                            <h6 class="card-subtitle mb-2 text-muted mt-3">执行历史</h6>
-                            <div style="height: 180px; overflow-y: auto;">
-                                <table class="table table-sm table-hover">
-                                    <thead><tr><th>时间</th><th>结果</th><th>流量</th><th>下载数</th></tr></thead>
-                                    <tbody id="history-table-body"></tbody>
-                                </table>
+                            <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-2">
+                                <h6 class="card-subtitle mb-0 text-muted">运行中的计划</h6>
+                                <div class="small text-muted">
+                                    <span id="job-details">-</span>
+                                </div>
+                            </div>
+                            <div class="plan-list mt-2" id="runtime-plan-list">
+                                <div class="text-muted small py-2">暂无运行计划。</div>
+                            </div>
+                            <div class="small text-muted mt-3">
+                                点击“查看详情”可查看该计划的执行历史、结果、流量和下载数。
                             </div>
                         </div>
                         <!-- 日志面板 -->
@@ -182,28 +185,36 @@
             <h5 class="offcanvas-title" id="config-editor-label"><i class="bi bi-pencil-square"></i> 配置编辑器</h5>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
         </div>
-        <div class="offcanvas-body">
-            <div class="mb-3">
-                <label for="config-editor-select" class="form-label-sm">选择配置</label>
-                <select class="form-select form-select-sm" id="config-editor-select">
-                    <option value="" selected>新建配置</option>
-                </select>
+        <div class="offcanvas-body config-offcanvas-body">
+            <!-- 顶部工具栏：先选配置，再进入分组编辑，避免一进来就被参数淹没。 -->
+            <div class="config-toolbar">
+                <div class="row g-3 align-items-end">
+                    <div class="col-12">
+                        <label for="config-editor-select" class="form-label-sm">选择配置</label>
+                        <select class="form-select form-select-sm" id="config-editor-select">
+                            <option value="" selected>新建配置</option>
+                        </select>
+                    </div>
+                </div>
             </div>
-            <div class="row g-3 config-layout">
-                <div class="col-lg-6">
-                    <div class="config-section">
-                        <div class="config-section-header">
-                            <i class="bi bi-sliders"></i>
-                            <span>基础参数</span>
-                        </div>
-                        <div class="config-section-body">
+
+            <!-- 用折叠分组降低信息密度，避免所有字段同时压在一屏里。 -->
+            <div class="accordion config-accordion" id="config-editor-accordion">
+                <div class="accordion-item config-accordion-item">
+                    <h2 class="accordion-header" id="config-basic-heading">
+                        <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#config-basic-panel" aria-expanded="true" aria-controls="config-basic-panel">
+                            <i class="bi bi-sliders me-2"></i>基础参数
+                        </button>
+                    </h2>
+                    <div id="config-basic-panel" class="accordion-collapse collapse show" aria-labelledby="config-basic-heading">
+                        <div class="accordion-body">
                             <div class="mb-3">
                                 <label for="config-name" class="form-label-sm">配置名称</label>
                                 <input type="text" class="form-control form-control-sm" id="config-name" placeholder="例如：my_pink_task">
                             </div>
                             <div class="mb-3">
                                 <label for="urls" class="form-label-sm">下载链接</label>
-                                <textarea class="form-control form-control-sm" id="urls" rows="5" placeholder="每行一个URL"></textarea>
+                                <textarea class="form-control form-control-sm" id="urls" rows="6" placeholder="每行一个 URL"></textarea>
                                 <div class="form-text">支持批量粘贴，系统会自动忽略空行。</div>
                             </div>
                             <div class="row g-3">
@@ -218,40 +229,52 @@
                                         <option value="random">随机均衡</option>
                                         <option value="round_robin">轮询顺序</option>
                                     </select>
-                                    <div class="form-check form-switch mt-2">
-                                        <input class="form-check-input" type="checkbox" id="auto-remove-failed-url">
-                                        <label class="form-check-label" for="auto-remove-failed-url">失败链接自动移除</label>
-                                    </div>
-                                    <div class="form-check form-switch mt-2">
-                                        <input class="form-check-input" type="checkbox" id="auto-start">
-                                        <label class="form-check-label" for="auto-start">启动自动运行</label>
-                                    </div>
+                                </div>
+                            </div>
+                            <div class="switch-grid mt-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="auto-remove-failed-url">
+                                    <label class="form-check-label" for="auto-remove-failed-url">失败链接自动移除</label>
+                                </div>
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="auto-start">
+                                    <label class="form-check-label" for="auto-start">启动自动运行</label>
                                 </div>
                             </div>
                             <div class="form-text mt-2">开启后，连续失败的 URL 会自动从该配置中删除。</div>
-                            <div class="row g-3 mt-1">
-                                <div class="col-md-12">
-                                    <label for="user-agent" class="form-label-sm">User-Agent</label>
-                                    <input type="text" class="form-control form-control-sm" id="user-agent" placeholder="可选，自定义 UA">
-                                </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item config-accordion-item">
+                    <h2 class="accordion-header" id="config-network-heading">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#config-network-panel" aria-expanded="false" aria-controls="config-network-panel">
+                            <i class="bi bi-globe2 me-2"></i>网络与请求
+                        </button>
+                    </h2>
+                    <div id="config-network-panel" class="accordion-collapse collapse" aria-labelledby="config-network-heading">
+                        <div class="accordion-body">
+                            <div class="mb-3">
+                                <label for="user-agent" class="form-label-sm">User-Agent</label>
+                                <input type="text" class="form-control form-control-sm" id="user-agent" placeholder="可选，自定义 UA">
                             </div>
-                            <div class="row g-3 mt-1">
-                                <div class="col-md-12">
-                                    <label for="request-headers" class="form-label-sm">自定义请求头</label>
-                                    <textarea class="form-control form-control-sm" id="request-headers" rows="3" placeholder="每行一个请求头，例如：&#10;Referer: https://example.com&#10;Origin: https://example.com"></textarea>
-                                    <div class="form-text">每行一个 `Header: value`，留空表示不添加额外请求头。</div>
-                                </div>
+                            <div>
+                                <label for="request-headers" class="form-label-sm">自定义请求头</label>
+                                <textarea class="form-control form-control-sm" id="request-headers" rows="4" placeholder="每行一个请求头，例如：&#10;Referer: https://example.com&#10;Origin: https://example.com"></textarea>
+                                <div class="form-text">每行一个 `Header: value`，留空表示不添加额外请求头。</div>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="col-lg-6">
-                    <div class="config-section">
-                        <div class="config-section-header">
-                            <i class="bi bi-speedometer"></i>
-                            <span>性能与限制</span>
-                        </div>
-                        <div class="config-section-body">
+
+                <div class="accordion-item config-accordion-item">
+                    <h2 class="accordion-header" id="config-limit-heading">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#config-limit-panel" aria-expanded="false" aria-controls="config-limit-panel">
+                            <i class="bi bi-speedometer me-2"></i>性能与限制
+                        </button>
+                    </h2>
+                    <div id="config-limit-panel" class="accordion-collapse collapse" aria-labelledby="config-limit-heading">
+                        <div class="accordion-body">
                             <div class="row g-3">
                                 <div class="col-md-6">
                                     <label for="limit-speed" class="form-label-sm">限速 (MB/s)</label>
@@ -261,8 +284,6 @@
                                     <label for="traffic-limit" class="form-label-sm">总流量 (MB)</label>
                                     <input type="number" class="form-control form-control-sm" id="traffic-limit" placeholder="默认：无限制">
                                 </div>
-                            </div>
-                            <div class="row g-3 mt-1">
                                 <div class="col-md-6">
                                     <label for="duration" class="form-label-sm">时长 (秒)</label>
                                     <input type="number" class="form-control form-control-sm" id="duration" placeholder="默认：无限制">
@@ -271,37 +292,37 @@
                                     <label for="count" class="form-label-sm">下载次数</label>
                                     <input type="number" class="form-control form-control-sm" id="count" placeholder="默认：无限制">
                                 </div>
-                            </div>
-                            <div class="row g-3 mt-1">
                                 <div class="col-md-6">
                                     <label for="url-switch-interval" class="form-label-sm">URL切换时限 (秒)</label>
-                                    <input type="number" class="form-control form-control-sm" id="url-switch-interval" placeholder="例如：30">
+                                    <input type="number" class="form-control form-control-sm" id="url-switch-interval" placeholder="留空=不启用，例如：30">
                                 </div>
                                 <div class="col-md-6">
                                     <label for="thread-start-delay" class="form-label-sm">线程启动间隔 (秒)</label>
-                                    <input type="number" class="form-control form-control-sm" id="thread-start-delay" placeholder="例如：0.5">
+                                    <input type="number" class="form-control form-control-sm" id="thread-start-delay" placeholder="留空=0，例如：0.5">
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="col-12">
-                    <div class="config-section">
-                        <div class="config-section-header">
-                            <i class="bi bi-calendar-check"></i>
-                            <span>调度设置</span>
-                        </div>
-                        <div class="config-section-body">
+
+                <div class="accordion-item config-accordion-item">
+                    <h2 class="accordion-header" id="config-scheduler-heading">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#config-scheduler-panel" aria-expanded="false" aria-controls="config-scheduler-panel">
+                            <i class="bi bi-calendar-check me-2"></i>调度设置
+                        </button>
+                    </h2>
+                    <div id="config-scheduler-panel" class="accordion-collapse collapse" aria-labelledby="config-scheduler-heading">
+                        <div class="accordion-body">
                             <div class="row g-3 align-items-end">
-                                <div class="col-md-4">
+                                <div class="col-lg-4">
                                     <label for="interval" class="form-label-sm">间隔 (分钟)</label>
                                     <input type="number" class="form-control form-control-sm" id="interval" placeholder="例如：15">
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col-lg-4">
                                     <label for="cron-expr" class="form-label-sm">Cron 表达式</label>
                                     <input type="text" class="form-control form-control-sm" id="cron-expr" placeholder="例如：*/5 * * * *">
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col-lg-4">
                                     <label class="form-label-sm d-block">快速模板</label>
                                     <div class="d-flex flex-wrap gap-2">
                                         <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="*/30 * * * *">每30分钟</button>
@@ -310,14 +331,69 @@
                                     </div>
                                 </div>
                             </div>
-                            <div id="cron-preview" class="form-text mt-2"></div>
+                            <div id="cron-preview" class="form-text mt-3"></div>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="d-flex justify-content-between mt-3">
+
+            <!-- 底部操作区固定在视口底部，滚动时也不会丢。 -->
+            <div class="config-editor-actions d-flex justify-content-between mt-3">
                 <button class="btn btn-outline-secondary" id="reset-config-btn"><i class="bi bi-arrow-counterclockwise"></i> 清空</button>
                 <button id="save-config-btn" class="btn btn-success"><i class="bi bi-save"></i> 保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="plan-detail-modal" tabindex="-1" aria-labelledby="plan-detail-modal-label" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="plan-detail-modal-label"><i class="bi bi-card-list"></i> 计划详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3 mb-3" id="plan-detail-summary">
+                        <div class="col-md-4">
+                            <div class="stat-chip">
+                                <span class="stat-label">计划名称</span>
+                                <span id="plan-detail-name" class="stat-value">-</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="stat-chip">
+                                <span class="stat-label">下次执行</span>
+                                <span id="plan-detail-next-run" class="stat-value">无</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="stat-chip">
+                                <span class="stat-label">累计流量 / 下载数</span>
+                                <span id="plan-detail-total" class="stat-value">0 B / 0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>执行时间</th>
+                                    <th>结果</th>
+                                    <th>流量</th>
+                                    <th>下载数</th>
+                                </tr>
+                            </thead>
+                            <tbody id="plan-detail-history-body">
+                                <tr class="no-history">
+                                    <td colspan="4" class="text-center text-muted py-3">暂无执行记录。</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
             </div>
         </div>
     </div>
