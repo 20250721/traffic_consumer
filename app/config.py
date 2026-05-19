@@ -4,6 +4,7 @@
 """流量消耗器全局配置与默认常量。"""
 
 import os
+from pathlib import Path
 
 # 默认URL列表
 DEFAULT_URLS = [
@@ -13,10 +14,15 @@ DEFAULT_URLS = [
 ]
 
 # 配置文件路径
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".traffic_consumer")
+# 允许通过环境变量显式指定配置目录，方便 Docker / NAS / 打包版把数据落到持久化位置。
+_CUSTOM_CONFIG_DIR = os.environ.get("TRAFFIC_CONSUMER_CONFIG_DIR")
+if _CUSTOM_CONFIG_DIR:
+    CONFIG_DIR = os.path.abspath(os.path.expanduser(_CUSTOM_CONFIG_DIR))
+else:
+    CONFIG_DIR = os.path.join(str(Path.home()), ".traffic_consumer")
+
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 STATS_FILE = os.path.join(CONFIG_DIR, "stats.json")
 
 # 默认分块大小
 DEFAULT_CHUNK_SIZE = 256 * 1024  # 256KB
-

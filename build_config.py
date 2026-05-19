@@ -25,6 +25,15 @@ def build_executable(script_name, output_name=None):
         output_name = f"{base_name}_{platform_name}{ext}"
     
     print(f"正在构建 {script_name} -> {output_name}")
+
+    data_separator = ";" if platform.system().lower().startswith("win") else ":"
+    data_items = [
+        f"templates{data_separator}templates",
+        f"static{data_separator}static",
+    ]
+    add_data_args = []
+    for item in data_items:
+        add_data_args.extend(["--add-data", item])
     
     # PyInstaller命令
     cmd = [
@@ -36,9 +45,11 @@ def build_executable(script_name, output_name=None):
         "--hidden-import=tqdm",
         "--hidden-import=colorama",
         "--hidden-import=apscheduler",
+        "--hidden-import=engineio.async_drivers.threading",
         "--name", output_name,
         script_name
     ]
+    cmd[8:8] = add_data_args
     
     # 执行构建
     try:

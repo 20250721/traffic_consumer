@@ -10,6 +10,7 @@ import threading
 import time
 import http.client
 from datetime import datetime
+from typing import Dict, Optional
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -38,8 +39,12 @@ class TrafficConsumer:
                  duration=None, count=None, cron_expr=None,
                  traffic_limit=None, interval=None,
                  config_name="default", url_strategy="random", logger=None, history_callback=None,
-                 invalid_url_callback=None, auto_remove_failed_url=False):
-        initial_urls = list(urls) if urls else list(DEFAULT_URLS)
+                 invalid_url_callback=None, auto_remove_failed_url=False,
+                 user_agent=None, request_headers=None,
+                 url_switch_interval=None, thread_start_delay=0):
+        # 仅在未显式传入 urls 时才回退到默认测试链接；
+        # 若用户传入空数组，表示“就是要清空配置”，绝不能偷偷补回默认值。
+        initial_urls = list(DEFAULT_URLS) if urls is None else list(urls)
         self.threads = threads if threads is not None else 4
         self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
         self.duration = duration  # 持续时间，单位秒
@@ -56,6 +61,10 @@ class TrafficConsumer:
         self.history_callback = history_callback
         self.invalid_url_callback = invalid_url_callback
         self.auto_remove_failed_url = bool(auto_remove_failed_url)
+        self.user_agent = self._clean_optional_header_value(user_agent)
+        self.request_headers = self._normalize_request_headers(request_headers)
+        self.url_switch_interval = self._coerce_positive_number(url_switch_interval)
+        self.thread_start_delay = self._coerce_non_negative_number(thread_start_delay) or 0
 
         # 网络与控制参数
         self.connect_timeout = 10
@@ -76,6 +85,7 @@ class TrafficConsumer:
 
         # 调度器
         self.scheduler = None
+        self._stop_requested = threading.Event()
 
         # 状态
         self.status = "初始化"
@@ -96,6 +106,71 @@ class TrafficConsumer:
         )
         self.urls = self.url_manager.urls
 
+    @staticmethod
+    def _coerce_positive_number(value):
+        """将前端/配置传入的数字统一转为正数；无效值按未配置处理。"""
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _coerce_non_negative_number(value):
+        """将前端/配置传入的数字统一转为非负数；无效值按未配置处理。"""
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _clean_optional_header_value(value: Optional[str]) -> Optional[str]:
+        """清理请求头值，拒绝 CR/LF，避免把多行内容注入到 HTTP 头里。"""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or "\r" in text or "\n" in text:
+            return None
+        return text
+
+    @classmethod
+    def _normalize_request_headers(cls, headers) -> Dict[str, str]:
+        """规范化自定义请求头，仅保留合法的单行键值。"""
+        if not headers:
+            return {}
+
+        normalized = {}
+        if isinstance(headers, dict):
+            items = headers.items()
+        elif isinstance(headers, (list, tuple)):
+            # 兼容 CLI / 旧配置中保存为 ["Name: Value"] 的情况。
+            pairs = []
+            for line in headers:
+                if not isinstance(line, str) or ":" not in line:
+                    continue
+                name, value = line.split(":", 1)
+                pairs.append((name, value))
+            items = pairs
+        else:
+            return {}
+
+        for name, value in items:
+            header_name = str(name).strip()
+            header_value = cls._clean_optional_header_value(value)
+            if (
+                not header_name
+                or header_value is None
+                or any(ch in header_name for ch in "\r\n:")
+            ):
+                continue
+            normalized[header_name] = header_value
+        return normalized
+
     def _default_logger(self, message, color=None):
         if color:
             print(f"{color}{message}{Style.RESET_ALL}")
@@ -115,12 +190,23 @@ class TrafficConsumer:
     def _reset_limit_flags(self):
         self._traffic_limit_triggered = False
         self._count_limit_triggered = False
+
+    def _sleep_with_stop(self, seconds):
+        """可被停止信号打断的睡眠，避免停止计划后线程还傻等。"""
+        if seconds <= 0:
+            return True
+        end_time = time.monotonic() + seconds
+        while time.monotonic() < end_time:
+            if self._stop_requested.is_set() or not self.active:
+                return False
+            time.sleep(min(0.1, end_time - time.monotonic()))
+        return True
         
     def download_file(self, thread_id):
         """单个线程的下载函数"""
         session = self._create_session()
 
-        while self.active:
+        while self.active and not self._stop_requested.is_set():
             if self.count is not None:
                 with self.lock:
                     if self.download_count >= self.count:
@@ -165,6 +251,11 @@ class TrafficConsumer:
             "Pragma": "no-cache",
             "Expires": "0"
         })
+        # 先应用自定义请求头，再让专用 UA 字段覆盖 User-Agent，避免界面两处配置互相打架。
+        if self.request_headers:
+            session.headers.update(self.request_headers)
+        if self.user_agent:
+            session.headers["User-Agent"] = self.user_agent
         return session
 
     def _download_with_retries(self, session, url, thread_id):
@@ -172,7 +263,7 @@ class TrafficConsumer:
         attempt = 1
         backoff = self.retry_backoff
 
-        while attempt <= self.max_retries and self.active:
+        while attempt <= self.max_retries and self.active and not self._stop_requested.is_set():
             try:
                 return self._stream_download(session, url)
             except (RequestException, Timeout, http.client.IncompleteRead, ChunkedEncodingError) as exc:
@@ -192,7 +283,8 @@ class TrafficConsumer:
                         self.active = False
                     return False
 
-                time.sleep(backoff)
+                if not self._sleep_with_stop(backoff):
+                    return False
                 backoff = min(backoff * 2, 8.0)
                 attempt += 1
 
@@ -215,6 +307,7 @@ class TrafficConsumer:
     def _stream_download(self, session, url):
         """执行一次流式下载，返回是否完整结束"""
         completed = True
+        stream_started_at = time.monotonic()
 
         with session.get(
             url,
@@ -224,7 +317,7 @@ class TrafficConsumer:
             response.raise_for_status()
 
             for chunk in response.iter_content(chunk_size=self.chunk_size):
-                if not self.active:
+                if not self.active or self._stop_requested.is_set():
                     completed = False
                     break
 
@@ -241,7 +334,21 @@ class TrafficConsumer:
                     completed = False
                     break
 
+                if self._should_switch_url(stream_started_at):
+                    self.logger(
+                        f"链接已连续下载超过 {self.url_switch_interval:g} 秒，切换到下一条 URL。",
+                        Fore.CYAN,
+                    )
+                    completed = False
+                    break
+
         return completed
+
+    def _should_switch_url(self, started_at):
+        """检查单条 URL 是否达到强制切换时限。"""
+        if not self.url_switch_interval:
+            return False
+        return (time.monotonic() - started_at) >= self.url_switch_interval
 
     def _check_traffic_limit(self):
         """检查是否达到流量限制"""
@@ -325,6 +432,10 @@ class TrafficConsumer:
             "traffic_limit": self.traffic_limit,
             "interval": self.interval,
             "auto_remove_failed_url": self.auto_remove_failed_url,
+            "user_agent": self.user_agent,
+            "request_headers": self.request_headers,
+            "url_switch_interval": self.url_switch_interval,
+            "thread_start_delay": self.thread_start_delay,
         }
         save_config_entry(self.config_name, payload)
 
@@ -353,16 +464,35 @@ class TrafficConsumer:
         if not self.cron_expr and not self.interval:
             return
 
+        if self.scheduler and self.scheduler.running:
+            self.stop_scheduler(wait=False)
+        self._stop_requested.clear()
+
         self.scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
         job = None
         
         try:
             if self.cron_expr:
                 trigger = CronTrigger.from_crontab(self.cron_expr)
-                job = self.scheduler.add_job(self.scheduled_run, trigger, id='traffic_consumer_job')
+                job = self.scheduler.add_job(
+                    self.scheduled_run,
+                    trigger,
+                    id='traffic_consumer_job',
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
                 self.logger(f"{Fore.CYAN}已设置Cron调度: {self.cron_expr}{Style.RESET_ALL}")
             elif self.interval:
-                job = self.scheduler.add_job(self.scheduled_run, 'interval', minutes=self.interval, id='traffic_consumer_job')
+                job = self.scheduler.add_job(
+                    self.scheduled_run,
+                    'interval',
+                    minutes=self.interval,
+                    id='traffic_consumer_job',
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
                 self.logger(f"{Fore.CYAN}已设置间隔调度: 每{self.interval}分钟执行一次{Style.RESET_ALL}")
 
             self.scheduler.start()
@@ -403,16 +533,51 @@ class TrafficConsumer:
         except Exception as e:
             self.logger(f"{Fore.RED}启动调度器时出错: {e}{Style.RESET_ALL}")
 
+    def stop_scheduler(self, wait=False):
+        """停止调度器，并阻止等待中的旧计划再次触发。"""
+        self._stop_requested.set()
+        self.active = False
+
+        scheduler = self.scheduler
+        if not scheduler:
+            self.next_run_time = None
+            self.status = "已停止"
+            return False
+
+        stopped = False
+        try:
+            if scheduler.running:
+                # 先移除固定 job id，再关闭调度器，避免 Web 端替换实例后旧计划继续“幽灵运行”。
+                try:
+                    if scheduler.get_job('traffic_consumer_job'):
+                        scheduler.remove_job('traffic_consumer_job')
+                except Exception as remove_exc:
+                    self.logger(f"{Fore.YELLOW}移除计划任务时出错: {remove_exc}{Style.RESET_ALL}")
+                scheduler.shutdown(wait=wait)
+                stopped = True
+        except Exception as shutdown_exc:
+            self.logger(f"{Fore.YELLOW}关闭调度器时出错: {shutdown_exc}{Style.RESET_ALL}")
+        finally:
+            self.scheduler = None
+            self.next_run_time = None
+            self.cron_expr = None
+            self.interval = None
+            self.status = "已停止"
+
+        return stopped
+
     def handle_signal(self, signum, frame):
         """处理信号"""
         self.logger(f"\n{Fore.YELLOW}接收到信号 {signum}，正在停止...{Style.RESET_ALL}")
-        if self.scheduler and self.scheduler.running:
-            self.scheduler.shutdown()
+        self.stop_scheduler(wait=False)
         self.active = False
         sys.exit(0)
 
     def scheduled_run(self):
         """由调度器执行的任务"""
+        if self._stop_requested.is_set():
+            return
+
         self.logger(f"\n{Fore.CYAN}[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始执行计划任务...{Style.RESET_ALL}")
         
         # 重置统计数据以进行新的运行
@@ -445,6 +610,9 @@ class TrafficConsumer:
 
     def _run_task(self):
         """执行一次完整的下载任务"""
+        if self._stop_requested.is_set():
+            return
+
         self._reset_limit_flags()
         self.active = True
         self.start_time = time.time()
@@ -452,10 +620,16 @@ class TrafficConsumer:
         
         download_threads = []
         for i in range(self.threads):
+            if not self.active or self._stop_requested.is_set():
+                break
             thread = threading.Thread(target=self.download_file, args=(i+1,))
             thread.daemon = True
             thread.start()
             download_threads.append(thread)
+            # 顺序发起线程可减少多 WAN/前端负载均衡把所有连接打到同一路的概率。
+            if self.thread_start_delay and i < self.threads - 1:
+                if not self._sleep_with_stop(self.thread_start_delay):
+                    break
         
         stats_thread = None
         # 仅在CLI模式下启动独立的统计显示线程
@@ -468,10 +642,10 @@ class TrafficConsumer:
             # 限制条件（如时长、流量、次数）将在download_file方法内部检查
             # 并将self.active设置为False
             if self.duration:
-                time.sleep(self.duration)
+                self._sleep_with_stop(self.duration)
                 self.active = False
             else:
-                while self.active:
+                while self.active and not self._stop_requested.is_set():
                     time.sleep(0.1)
         except KeyboardInterrupt:
             self.logger(f"\n{Fore.YELLOW}接收到中断信号，正在停止...{Style.RESET_ALL}")
@@ -490,4 +664,5 @@ class TrafficConsumer:
         if self.cron_expr or self.interval:
             self.setup_scheduler()
         else:
+            self._stop_requested.clear()
             self._run_task()

@@ -7,6 +7,8 @@ import datetime
 import os
 import json
 import re
+import sys
+from pathlib import Path
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from croniter import croniter
@@ -15,8 +17,21 @@ from colorama import Fore
 from app.config import STATS_FILE
 from app.consumer import TrafficConsumer
 
+def _bundle_root() -> Path:
+    """返回运行时资源根目录；打包版优先使用 PyInstaller 解包目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = _bundle_root()
+
 # 初始化 Flask 和 SocketIO
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder=str(BASE_DIR / "templates"),
+    static_folder=str(BASE_DIR / "static"),
+)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, async_mode='threading')
 
@@ -25,6 +40,7 @@ consumer_instance = None
 consumer_thread = None
 status_thread = None
 status_thread_stop = threading.Event()
+consumer_lock = threading.RLock()
 log_enabled = False
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-9;]*m")
 COLOR_TO_CSS = {
@@ -72,6 +88,54 @@ def load_history_from_stats():
     except Exception as e:
         print(f"加载历史记录失败: {e}")
         return []
+
+
+def build_consumer_kwargs(config_name, config_data, **callbacks):
+    """把前端配置转换为 TrafficConsumer 参数，避免启动和保存两套字段越写越散。"""
+    config_data = config_data or {}
+    return {
+        "urls": config_data.get('urls'),
+        "url_strategy": config_data.get('url_strategy'),
+        "threads": config_data.get('threads'),
+        "limit_speed": config_data.get('limit_speed'),
+        "duration": config_data.get('duration'),
+        "count": config_data.get('count'),
+        "traffic_limit": config_data.get('traffic_limit'),
+        "cron_expr": config_data.get('cron_expr'),
+        "interval": config_data.get('interval'),
+        "config_name": config_name or config_data.get('config_name'),
+        "auto_remove_failed_url": config_data.get('auto_remove_failed_url', False),
+        "user_agent": config_data.get('user_agent'),
+        "request_headers": config_data.get('request_headers'),
+        "url_switch_interval": config_data.get('url_switch_interval'),
+        "thread_start_delay": config_data.get('thread_start_delay'),
+        **callbacks,
+    }
+
+
+def stop_current_consumer(wait_thread=False):
+    """停止当前下载与调度器；返回是否确实停止过任务。"""
+    global consumer_instance, consumer_thread
+    stopped = False
+
+    with consumer_lock:
+        if consumer_instance:
+            if consumer_instance.active:
+                consumer_instance.active = False
+                stopped = True
+            if consumer_instance.stop_scheduler(wait=False):
+                stopped = True
+
+        thread = consumer_thread
+
+    if wait_thread and thread and thread.is_alive():
+        thread.join(timeout=3)
+
+    with consumer_lock:
+        if consumer_thread and not consumer_thread.is_alive():
+            consumer_thread = None
+
+    return stopped
 
 def status_emitter():
     """定期向前端发送状态更新"""
@@ -123,20 +187,23 @@ def status_emitter():
 def scheduler_status_emitter():
     """定期向前端发送调度器状态更新"""
     while not status_thread_stop.is_set():
-        if consumer_instance:
+        with consumer_lock:
+            instance = consumer_instance
+
+        if instance:
             next_run_time = None
             job_details = None
-            if consumer_instance.scheduler and consumer_instance.scheduler.running:
-                job = consumer_instance.scheduler.get_job('traffic_consumer_job')
+            if instance.scheduler and instance.scheduler.running:
+                job = instance.scheduler.get_job('traffic_consumer_job')
                 if job:
                     next_run_time = job.next_run_time.isoformat() if job.next_run_time else None
-                    if consumer_instance.cron_expr:
-                        job_details = f"Cron: {consumer_instance.cron_expr}"
-                    elif consumer_instance.interval:
-                        job_details = f"Interval: {consumer_instance.interval} minutes"
+                    if instance.cron_expr:
+                        job_details = f"Cron: {instance.cron_expr}"
+                    elif instance.interval:
+                        job_details = f"Interval: {instance.interval} minutes"
 
             # 合并当前实例的历史记录和stats.json中的历史记录
-            current_history = consumer_instance.stats_manager.history if consumer_instance.stats_manager.history else []
+            current_history = instance.stats_manager.history if instance.stats_manager.history else []
             stored_history = load_history_from_stats()
 
             # 去重并合并（优先使用当前实例的记录）
@@ -215,9 +282,24 @@ def handle_toggle_logs(data):
 def handle_start(data):
     """启动流量消耗器"""
     global consumer_instance, consumer_thread
-    if consumer_thread and consumer_thread.is_alive():
+
+    with consumer_lock:
+        has_active_scheduler = (
+            consumer_instance
+            and consumer_instance.scheduler
+            and consumer_instance.scheduler.running
+        )
+        has_active_download = bool(consumer_instance and consumer_instance.active)
+        has_live_thread = bool(consumer_thread and consumer_thread.is_alive())
+
+    if has_active_download or (has_live_thread and not has_active_scheduler):
         emit('error', {'message': '流量消耗器已在运行。'})
         return
+
+    # Web 定时任务启动后承载线程会退出，但 BackgroundScheduler 仍在后台运行；
+    # 再次启动新配置前必须显式停掉旧计划，否则就会出现用户反馈的“偷偷下载”。
+    if has_active_scheduler:
+        stop_current_consumer(wait_thread=True)
 
     def log_emitter(message, color=None):
         if isinstance(message, dict):
@@ -238,38 +320,31 @@ def handle_start(data):
     def invalid_url_emitter(payload):
         socketio.emit('invalid_url', payload)
 
-    consumer_instance = TrafficConsumer(
-        urls=data.get('urls'),
-        url_strategy=data.get('url_strategy'),
-        threads=data.get('threads'),
-        limit_speed=data.get('limit_speed'),
-        duration=data.get('duration'),
-        count=data.get('count'),
-        traffic_limit=data.get('traffic_limit'),
-        cron_expr=data.get('cron_expr'),
-        interval=data.get('interval'),
-        config_name=data.get('config_name'),
+    config_name = data.get('config_name') or data.get('name')
+    consumer_instance = TrafficConsumer(**build_consumer_kwargs(
+        config_name,
+        data,
         logger=log_emitter,
         history_callback=history_emitter,
         invalid_url_callback=invalid_url_emitter,
-        auto_remove_failed_url=data.get('auto_remove_failed_url', False)
-    )
+    ))
 
     consumer_thread = threading.Thread(target=consumer_instance.start)
     consumer_thread.daemon = True
     consumer_thread.start()
-    emit('status_update', {'running': True, 'message': f'流量消耗器已使用配置启动: {data.get("config_name")}'})
+    emit('status_update', {'running': True, 'message': f'流量消耗器已使用配置启动: {config_name}'})
 
 @socketio.on('stop_consumer')
 def handle_stop():
     """停止流量消耗器"""
     global consumer_instance, consumer_thread
-    if consumer_instance and consumer_instance.active:
-        consumer_instance.active = False
-        if consumer_thread:
-            consumer_thread.join()
-        consumer_thread = None
+    if stop_current_consumer(wait_thread=True):
         emit('status_update', {'running': False, 'message': '流量消耗器已停止。'})
+        socketio.emit('scheduler_status_update', {
+            'next_run_time': None,
+            'job_details': None,
+            'history': load_history_from_stats()
+        })
     else:
         emit('error', {'message': '流量消耗器未在运行。'})
 
@@ -277,15 +352,13 @@ def handle_stop():
 def handle_stop_scheduler():
     """停止调度器"""
     global consumer_instance
-    if consumer_instance and consumer_instance.scheduler and consumer_instance.scheduler.running:
-        consumer_instance.scheduler.shutdown()
-        consumer_instance.scheduler = None
-        # 重置cron和interval，以防实例被复用
-        consumer_instance.cron_expr = None
-        consumer_instance.interval = None
-        emit('status_update', {'message': '调度器已停止。'})
-        # 立即请求前端更新状态
-        socketio.emit('request_status_update')
+    if stop_current_consumer(wait_thread=True):
+        emit('status_update', {'running': False, 'message': '调度器已停止。'})
+        socketio.emit('scheduler_status_update', {
+            'next_run_time': None,
+            'job_details': None,
+            'history': load_history_from_stats()
+        })
     else:
         emit('error', {'message': '调度器未在运行。'})
 
@@ -310,25 +383,55 @@ def handle_get_config_details(data):
 @socketio.on('save_config')
 def handle_save_config(data):
     """保存配置"""
+    global consumer_instance, consumer_thread
     config_name = data.get('name')
     config_data = data.get('data')
 
-    consumer = TrafficConsumer(
-        urls=config_data.get('urls'),
-        url_strategy=config_data.get('url_strategy'),
-        threads=config_data.get('threads'),
-        limit_speed=config_data.get('limit_speed'),
-        duration=config_data.get('duration'),
-        count=config_data.get('count'),
-        traffic_limit=config_data.get('traffic_limit'),
-        cron_expr=config_data.get('cron_expr'),
-        interval=config_data.get('interval'),
-        config_name=config_name,
-        auto_remove_failed_url=config_data.get('auto_remove_failed_url', False)
-    )
+    if not config_name:
+        emit('error', {'message': '配置名称不能为空。'})
+        return
+
+    # 若正在编辑当前计划，先停止旧 scheduler；仅保存配置不应保留后台旧计划继续运行。
+    with consumer_lock:
+        is_current_config = (
+            consumer_instance
+            and consumer_instance.config_name == config_name
+            and consumer_instance.scheduler
+            and consumer_instance.scheduler.running
+        )
+    if is_current_config:
+        stop_current_consumer(wait_thread=True)
+
+    consumer = TrafficConsumer(**build_consumer_kwargs(config_name, config_data))
     consumer.save_config()
     emit('status_update', {'message': f'配置 "{config_name}" 已保存。'})
     handle_get_configs() # Refresh the list
+
+
+@socketio.on('delete_config')
+def handle_delete_config(data):
+    """删除配置，并同步停掉同名运行计划。"""
+    config_name = (data or {}).get('name')
+    if not config_name:
+        emit('error', {'message': '请选择要删除的配置。'})
+        return
+
+    with consumer_lock:
+        is_current_config = consumer_instance and consumer_instance.config_name == config_name
+    if is_current_config:
+        stop_current_consumer(wait_thread=True)
+
+    deleted = TrafficConsumer.delete_config(config_name)
+    if deleted:
+        emit('status_update', {'running': False, 'message': f'配置 "{config_name}" 已删除。'})
+        socketio.emit('scheduler_status_update', {
+            'next_run_time': None,
+            'job_details': None,
+            'history': load_history_from_stats()
+        })
+    else:
+        emit('error', {'message': f'配置 "{config_name}" 不存在。'})
+    handle_get_configs()
 
 # This file is now imported by traffic_consumer.py
 # The main entry point is in traffic_consumer.py

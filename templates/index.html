@@ -62,6 +62,7 @@
                             <button id="start-btn" class="btn btn-primary"><i class="bi bi-play-fill"></i> 启动</button>
                             <button id="stop-btn" class="btn btn-danger" disabled><i class="bi bi-stop-fill"></i> 停止</button>
                             <button id="stop-scheduler-btn" class="btn btn-warning" disabled><i class="bi bi-calendar-x"></i> 停止计划</button>
+                            <button id="delete-config-btn" class="btn btn-outline-danger"><i class="bi bi-trash"></i> 删除配置</button>
                         </div>
                     </div>
                 </div>
@@ -211,21 +212,34 @@
                                     <input type="number" class="form-control form-control-sm" id="threads" placeholder="默认：4">
                                 </div>
                                 <div class="col-md-6">
-                                <label for="url-strategy" class="form-label-sm">URL 策略</label>
-                                <select class="form-select form-select-sm" id="url-strategy">
-                                    <option value="">默认（系统智能）</option>
-                                    <option value="random">随机均衡</option>
-                                    <option value="round_robin">轮询顺序</option>
-                                </select>
-                                <div class="form-check form-switch mt-2">
-                                    <input class="form-check-input" type="checkbox" id="auto-remove-failed-url">
-                                    <label class="form-check-label" for="auto-remove-failed-url">失败链接自动移除</label>
-                                    <div class="form-text">开启后，连续失败的 URL 会自动从该配置中删除。</div>
+                                    <label for="url-strategy" class="form-label-sm">URL 策略</label>
+                                    <select class="form-select form-select-sm" id="url-strategy">
+                                        <option value="">默认（系统智能）</option>
+                                        <option value="random">随机均衡</option>
+                                        <option value="round_robin">轮询顺序</option>
+                                    </select>
+                                    <div class="form-check form-switch mt-2">
+                                        <input class="form-check-input" type="checkbox" id="auto-remove-failed-url">
+                                        <label class="form-check-label" for="auto-remove-failed-url">失败链接自动移除</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-text mt-2">开启后，连续失败的 URL 会自动从该配置中删除。</div>
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-12">
+                                    <label for="user-agent" class="form-label-sm">User-Agent</label>
+                                    <input type="text" class="form-control form-control-sm" id="user-agent" placeholder="可选，自定义 UA">
+                                </div>
+                            </div>
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-12">
+                                    <label for="request-headers" class="form-label-sm">自定义请求头</label>
+                                    <textarea class="form-control form-control-sm" id="request-headers" rows="3" placeholder="每行一个请求头，例如：&#10;Referer: https://example.com&#10;Origin: https://example.com"></textarea>
+                                    <div class="form-text">每行一个 `Header: value`，留空表示不添加额外请求头。</div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
                 </div>
                 <div class="col-lg-6">
                     <div class="config-section">
@@ -252,6 +266,16 @@
                                 <div class="col-md-6">
                                     <label for="count" class="form-label-sm">下载次数</label>
                                     <input type="number" class="form-control form-control-sm" id="count" placeholder="默认：无限制">
+                                </div>
+                            </div>
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-6">
+                                    <label for="url-switch-interval" class="form-label-sm">URL切换时限 (秒)</label>
+                                    <input type="number" class="form-control form-control-sm" id="url-switch-interval" placeholder="例如：30">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="thread-start-delay" class="form-label-sm">线程启动间隔 (秒)</label>
+                                    <input type="number" class="form-control form-control-sm" id="thread-start-delay" placeholder="例如：0.5">
                                 </div>
                             </div>
                         </div>

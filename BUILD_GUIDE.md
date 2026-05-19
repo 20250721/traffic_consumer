@@ -69,6 +69,7 @@ pyinstaller --onefile --name traffic_consumer_local traffic_consumer.py
 ### PyInstaller配置
 
 - 使用 `--onefile` 参数生成单个可执行文件
+- 打包时会自动包含 `templates/` 与 `static/` 目录，避免 Web UI 静态资源 404
 - 自动包含所有必要的依赖项
 - 针对不同平台优化文件名
 

@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
     const startBtn = document.getElementById('start-btn');
     const stopBtn = document.getElementById('stop-btn');
     const stopSchedulerBtn = document.getElementById('stop-scheduler-btn');
+    const deleteConfigBtn = document.getElementById('delete-config-btn');
     const saveConfigBtn = document.getElementById('save-config-btn');
     const configSelect = document.getElementById('config-select');
     const runningStatus = document.getElementById('running-status');
@@ -21,7 +22,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
         cron_expr: document.getElementById('cron-expr'),
         interval: document.getElementById('interval'),
         url_strategy: document.getElementById('url-strategy'),
-        auto_remove_failed_url: document.getElementById('auto-remove-failed-url')
+        auto_remove_failed_url: document.getElementById('auto-remove-failed-url'),
+        user_agent: document.getElementById('user-agent'),
+        request_headers: document.getElementById('request-headers'),
+        url_switch_interval: document.getElementById('url-switch-interval'),
+        thread_start_delay: document.getElementById('thread-start-delay')
     };
     const jobDetailsEl = document.getElementById('job-details');
     const nextRunTimeEl = document.getElementById('next-run-time');
@@ -275,6 +280,27 @@ document.addEventListener('DOMContentLoaded', (event) => {
         if (configInputs.auto_remove_failed_url) {
             configInputs.auto_remove_failed_url.checked = Boolean(config.auto_remove_failed_url);
         }
+        if (configInputs.user_agent) {
+            configInputs.user_agent.value = config.user_agent ?? '';
+        }
+        if (configInputs.request_headers) {
+            const headers = config.request_headers;
+            if (Array.isArray(headers)) {
+                configInputs.request_headers.value = headers.join('\n');
+            } else if (headers && typeof headers === 'object') {
+                configInputs.request_headers.value = Object.entries(headers)
+                    .map(([name, value]) => `${name}: ${value}`)
+                    .join('\n');
+            } else {
+                configInputs.request_headers.value = '';
+            }
+        }
+        if (configInputs.url_switch_interval) {
+            configInputs.url_switch_interval.value = config.url_switch_interval ?? '';
+        }
+        if (configInputs.thread_start_delay) {
+            configInputs.thread_start_delay.value = config.thread_start_delay ?? '';
+        }
         editorActiveConfig = name || null;
         if (cronPreviewEl) {
             cronPreviewEl.innerHTML = '';
@@ -296,7 +322,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
             cron_expr: config.cron_expr ?? null,
             interval: config.interval ?? null,
             config_name: name || config.config_name || null,
-            auto_remove_failed_url: Boolean(config.auto_remove_failed_url)
+            auto_remove_failed_url: Boolean(config.auto_remove_failed_url),
+            user_agent: config.user_agent ?? null,
+            request_headers: config.request_headers ?? null,
+            url_switch_interval: config.url_switch_interval ?? null,
+            thread_start_delay: config.thread_start_delay ?? null
         };
 
         payload.name = name || config.name || '';
@@ -330,6 +360,40 @@ document.addEventListener('DOMContentLoaded', (event) => {
         if (!payload.url_strategy) {
             payload.url_strategy = null;
         }
+
+        payload.user_agent = payload.user_agent ? String(payload.user_agent).trim() : null;
+
+        if (payload.request_headers !== null && payload.request_headers !== undefined && payload.request_headers !== '') {
+            if (Array.isArray(payload.request_headers)) {
+                payload.request_headers = payload.request_headers
+                    .map((line) => String(line).trim())
+                    .filter((line) => line !== '');
+            } else if (typeof payload.request_headers === 'string') {
+                payload.request_headers = payload.request_headers
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter((line) => line !== '');
+            } else if (typeof payload.request_headers === 'object') {
+                payload.request_headers = Object.fromEntries(
+                    Object.entries(payload.request_headers)
+                        .map(([k, v]) => [String(k).trim(), String(v).trim()])
+                        .filter(([k, v]) => k !== '' && v !== '')
+                );
+            } else {
+                payload.request_headers = null;
+            }
+        } else {
+            payload.request_headers = null;
+        }
+
+        ['url_switch_interval', 'thread_start_delay'].forEach((key) => {
+            if (payload[key] === null || payload[key] === undefined || payload[key] === '') {
+                payload[key] = null;
+                return;
+            }
+            const parsed = parseFloat(payload[key]);
+            payload[key] = Number.isFinite(parsed) ? parsed : null;
+        });
 
         return payload;
     }
@@ -643,17 +707,27 @@ document.addEventListener('DOMContentLoaded', (event) => {
     });
 
     socket.on('status_update', (data) => {
-        if (data.running) {
-            runningStatus.textContent = '运行中';
-            runningStatus.className = 'badge bg-success';
-        } else {
-            runningStatus.textContent = '已停止';
-            runningStatus.className = 'badge bg-secondary';
+        if (typeof data.running === 'boolean') {
+            if (data.running) {
+                runningStatus.textContent = '运行中';
+                runningStatus.className = 'badge bg-success';
+            } else {
+                runningStatus.textContent = '已停止';
+                runningStatus.className = 'badge bg-secondary';
+            }
+            startBtn.disabled = data.running;
+            stopBtn.disabled = !data.running;
         }
-        document.getElementById('speed-text').textContent = data.speed || '0 B/s';
-        document.getElementById('total-bytes').textContent = data.total_bytes || '0 B';
-        document.getElementById('download-count').textContent = data.download_count || '0';
-        if (currentConfigEl) {
+        if (data.speed !== undefined) {
+            document.getElementById('speed-text').textContent = data.speed || '0 B/s';
+        }
+        if (data.total_bytes !== undefined) {
+            document.getElementById('total-bytes').textContent = data.total_bytes || '0 B';
+        }
+        if (data.download_count !== undefined) {
+            document.getElementById('download-count').textContent = data.download_count || '0';
+        }
+        if (currentConfigEl && typeof data.config === 'string') {
             const safeConfigName = typeof data.config === 'string' && data.config.trim()
                 ? data.config.trim()
                 : '未命名配置';
@@ -661,15 +735,21 @@ document.addEventListener('DOMContentLoaded', (event) => {
             currentConfigEl.title = safeConfigName;
         }
 
-        const speedValue = data.speed ? data.speed.match(/(\d+\.\d+)\s*MB\/s/i) : null;
-        const speedMB = speedValue ? parseFloat(speedValue[1]) : 0;
-        addDataToChart(new Date().toLocaleTimeString(), speedMB);
+        if (data.speed) {
+            const speedValue = data.speed.match(/(\d+\.\d+)\s*MB\/s/i);
+            const speedMB = speedValue ? parseFloat(speedValue[1]) : 0;
+            addDataToChart(new Date().toLocaleTimeString(), speedMB);
+        }
 
-        startBtn.disabled = data.running;
-        stopBtn.disabled = !data.running;
-
-        renderThreadStatus(data.thread_status, data.thread_count);
-        renderUrlUsage(data.url_usage_stats);
+        if (data.thread_status !== undefined || data.thread_count !== undefined) {
+            renderThreadStatus(data.thread_status, data.thread_count);
+        }
+        if (data.url_usage_stats !== undefined) {
+            renderUrlUsage(data.url_usage_stats);
+        }
+        if (data.message) {
+            pushAlert({ message: data.message });
+        }
     });
 
     socket.on('history_update', (record) => {
@@ -752,6 +832,14 @@ document.addEventListener('DOMContentLoaded', (event) => {
         } else {
             historyTableBody.innerHTML = '<tr class="no-history text-center"><td colspan="4">暂无历史记录</td></tr>';
         }
+
+        if (data.message) {
+            pushAlert({ message: data.message });
+        }
+    });
+
+    socket.on('error', (data = {}) => {
+        pushAlert({ message: data.message || '发生未知错误。' });
     });
     
     // --- 事件监听 ---
@@ -782,6 +870,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
                 .filter((url) => url !== '')
             : [];
 
+        raw.user_agent = configInputs.user_agent ? configInputs.user_agent.value.trim() : '';
+        raw.request_headers = configInputs.request_headers ? configInputs.request_headers.value.trim() : '';
+        raw.url_switch_interval = configInputs.url_switch_interval ? configInputs.url_switch_interval.value.trim() : '';
+        raw.thread_start_delay = configInputs.thread_start_delay ? configInputs.thread_start_delay.value.trim() : '';
+
         const normalized = normalizeConfigPayload(raw, raw.name || null);
         normalized.name = raw.name || '';
         return normalized;
@@ -804,6 +897,20 @@ document.addEventListener('DOMContentLoaded', (event) => {
     });
 
     stopSchedulerBtn.addEventListener('click', () => socket.emit('stop_scheduler'));
+
+    if (deleteConfigBtn) {
+        deleteConfigBtn.addEventListener('click', () => {
+            const targetName = editorActiveConfig || selectedConfigName || (configInputs.name && configInputs.name.value.trim());
+            if (!targetName) {
+                pushAlert({ message: '请先选择或输入要删除的配置。' });
+                return;
+            }
+            if (!window.confirm(`确定删除配置 "${targetName}" 吗？`)) {
+                return;
+            }
+            socket.emit('delete_config', { name: targetName });
+        });
+    }
 
     saveConfigBtn.addEventListener('click', () => {
         const config = getConfigFromForm();

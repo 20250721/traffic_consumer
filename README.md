@@ -27,9 +27,12 @@
 - **双运行模式**：默认 Web 控制台，可一键切换 `--no-gui` 进入 CLI。
 - **多线程拉流**：可配置并发数、限速、次数、时长、流量上限等条件。
 - **URL 策略与治理**：支持随机/轮询，记录每条 URL 的使用占比，可选择“失败自动移除”防止坏链污染配置。
+- **请求头支持**：可自定义 `User-Agent` 与额外请求头，适配需要鉴权或防爬限制的资源。
+- **更稳的调度控制**：支持停止计划、删除配置，并避免空配置回退到默认测试 URL。
 - **实时可视化**：速度曲线、线程状态、URL 饼图、日志流、调度倒计时全部集中显示。
 - **调度自动化**：Cron 与固定间隔二选一，带未来触发预览与单击停止。
 - **持久化存储**：配置与统计写入 `~/.traffic_consumer/`，Web/CLI 共享。
+- **持久化存储**：配置与统计写入 `~/.traffic_consumer/`，Web/CLI 共享；也可通过 `TRAFFIC_CONSUMER_CONFIG_DIR` 自定义目录。
 - **跨平台交付**：提供 Docker 镜像、PyInstaller 打包脚本与 GitHub Actions 工作流。
 <img width="1637" height="1097" alt="image" src="https://github.com/user-attachments/assets/0001c675-4bcf-4d60-9c78-bae0bf9a378a" />
 <img width="1637" height="1097" alt="image" src="https://github.com/user-attachments/assets/e7bf32d8-8d94-4057-941a-7bfbd287a845" />
@@ -53,6 +56,7 @@ docker run -d \
 
 - 访问 `http://宿主机IP:5001` 使用 Web 控制台。
 - `-v` 将配置与历史写入宿主机，容器删掉也不丢数据。
+- 若需显式指定数据目录，可设置环境变量 `TRAFFIC_CONSUMER_CONFIG_DIR=/root/.traffic_consumer`。
 - CLI 模式：`docker run --rm ... python traffic_consumer.py --no-gui --limit 5`
 
 常用命令：
@@ -96,7 +100,12 @@ python traffic_consumer.py \
   --threads 8 \
   --limit 10 \
   --traffic-limit 2048 \
-  --auto-remove-failed-url
+  --auto-remove-failed-url \
+  --user-agent "Mozilla/5.0 ..." \
+  --header "Referer: https://example.com" \
+  --headers-json '{"Origin":"https://example.com"}' \
+  --url-switch-interval 30 \
+  --thread-start-delay 0.5
 ```
 
 - 适合嵌入 CI 或远程主机。
@@ -132,6 +141,10 @@ python traffic_consumer.py \
 | `--traffic-limit` | 总流量上限（MB） | 无限制 |
 | `--cron` / `--interval` | 定时任务（二者互斥） | 不启用 |
 | `--auto-remove-failed-url` | URL 连续失败后自动从配置中删除 | 关闭 |
+| `--user-agent` | 自定义 `User-Agent` | 无 |
+| `--header` / `--headers-json` | 自定义请求头 | 无 |
+| `--url-switch-interval` | 单条 URL 连续下载后强制切换（秒） | 不启用 |
+| `--thread-start-delay` | 多线程顺序启动间隔（秒） | `0` |
 | `--config` | 指定配置名，并配合 `--load-config/--save-config` | `default` |
 | `--show-stats` | 打印最近 N 条历史（配合 `--stats-limit`） | 关闭 |
 | `--no-gui` | 禁用 Web UI，仅运行 CLI | 关闭 |
@@ -191,4 +204,3 @@ python traffic_consumer.py \
 3. 更新文档/截图/测试并在 PR 描述中写明动机与验证
 
 项目以 **MIT License** 发布，可自由使用与二次开发。
-

@@ -14,6 +14,7 @@ from app.storage import read_json, write_json
 
 def save_config_entry(config_name: str, payload: Dict) -> None:
     """将当前配置写入 JSON 文件。"""
+    config_name = normalize_config_name(config_name)
     config_data = read_json(CONFIG_FILE)
     config_data[config_name] = payload
     write_json(CONFIG_FILE, config_data)
@@ -29,7 +30,7 @@ def load_config_entry(config_name: str) -> Optional[Dict]:
     if config_name == "_all_":
         return config_data
 
-    return config_data.get(config_name)
+    return config_data.get(normalize_config_name(config_name))
 
 
 def list_saved_configs() -> None:
@@ -63,12 +64,23 @@ def list_saved_configs() -> None:
 
         if config.get("cron_expr"):
             print(f"  Cron表达式: {config['cron_expr']}")
+        if config.get("interval"):
+            print(f"  间隔执行: 每 {config['interval']} 分钟")
+        if config.get("user_agent"):
+            print(f"  User-Agent: {config['user_agent']}")
+        if config.get("request_headers"):
+            print(f"  自定义请求头: {config['request_headers']}")
+        if config.get("url_switch_interval"):
+            print(f"  URL切换时限: {config['url_switch_interval']} 秒")
+        if config.get("thread_start_delay") is not None:
+            print(f"  线程启动间隔: {config['thread_start_delay']} 秒")
         auto_remove = config.get("auto_remove_failed_url", False)
         print(f"  失败链接自动移除: {'开启' if auto_remove else '关闭'}")
 
 
 def delete_config_entry(config_name: str) -> bool:
     """删除指定配置，返回是否删除成功。"""
+    config_name = normalize_config_name(config_name)
     config_data = read_json(CONFIG_FILE)
     if not config_data:
         print(f"{Fore.YELLOW}配置文件不存在{Style.RESET_ALL}")
@@ -90,7 +102,7 @@ def remove_url_from_config(config_name: str, url: str) -> bool:
         return False
 
     config_data = read_json(CONFIG_FILE)
-    config = config_data.get(config_name)
+    config = config_data.get(normalize_config_name(config_name))
     if not config:
         return False
 
@@ -108,6 +120,12 @@ def remove_url_from_config(config_name: str, url: str) -> bool:
     if not updated:
         return False
 
-    config_data[config_name] = config
+    config_data[normalize_config_name(config_name)] = config
     write_json(CONFIG_FILE, config_data)
     return True
+
+
+def normalize_config_name(config_name: str) -> str:
+    """统一配置名称，避免空白名称把配置文件写成奇怪的 key。"""
+    text = str(config_name or "").strip()
+    return text or "default"
