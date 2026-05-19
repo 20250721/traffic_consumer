@@ -2,9 +2,13 @@ AOS.init({ once: true });
 
 document.addEventListener('DOMContentLoaded', (event) => {
     const socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port);
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((element) => {
+        bootstrap.Tooltip.getOrCreateInstance(element);
+    });
 
     // --- 元素获取 ---
     const startBtn = document.getElementById('start-btn');
+    const tempTestBtn = document.getElementById('temp-test-btn');
     const stopBtn = document.getElementById('stop-btn');
     const stopSchedulerBtn = document.getElementById('stop-scheduler-btn');
     const deleteConfigBtn = document.getElementById('delete-config-btn');
@@ -58,6 +62,32 @@ document.addEventListener('DOMContentLoaded', (event) => {
     let editorActiveConfig = null;
     let pendingConfigTarget = null;
     let pendingConfigName = null;
+
+    function applyRunningState(state, isRunning) {
+        const normalizedState = typeof state === 'string' ? state : (isRunning ? 'running' : 'stopped');
+        if (normalizedState === 'scheduled') {
+            runningStatus.textContent = '等待调度';
+            runningStatus.className = 'badge bg-info text-dark';
+            startBtn.disabled = true;
+            if (tempTestBtn) tempTestBtn.disabled = false;
+            stopBtn.disabled = false;
+            return;
+        }
+        if (normalizedState === 'running') {
+            runningStatus.textContent = '运行中';
+            runningStatus.className = 'badge bg-success';
+            startBtn.disabled = true;
+            if (tempTestBtn) tempTestBtn.disabled = true;
+            stopBtn.disabled = false;
+            return;
+        }
+
+        runningStatus.textContent = '已停止';
+        runningStatus.className = 'badge bg-secondary';
+        startBtn.disabled = false;
+        if (tempTestBtn) tempTestBtn.disabled = false;
+        stopBtn.disabled = true;
+    }
 
     // --- Chart.js 初始化 ---
     const speedChartCtx = document.getElementById('speed-chart').getContext('2d');
@@ -870,15 +900,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     socket.on('status_update', (data) => {
         if (typeof data.running === 'boolean') {
-            if (data.running) {
-                runningStatus.textContent = '运行中';
-                runningStatus.className = 'badge bg-success';
-            } else {
-                runningStatus.textContent = '已停止';
-                runningStatus.className = 'badge bg-secondary';
-            }
-            startBtn.disabled = data.running;
-            stopBtn.disabled = !data.running;
+            applyRunningState(data.state, data.running);
         }
         if (data.speed !== undefined) {
             document.getElementById('speed-text').textContent = data.speed || '0 B/s';
@@ -913,7 +935,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
             pushAlert({
                 message: data.message,
                 title: '状态更新：',
-                variant: data.running ? 'success' : 'secondary'
+                variant: data.state === 'scheduled' ? 'info' : (data.running ? 'success' : 'secondary')
             });
         }
     });
@@ -1043,6 +1065,24 @@ document.addEventListener('DOMContentLoaded', (event) => {
         payload.urls = Array.isArray(payload.urls) ? [...payload.urls] : [];
         socket.emit('start_consumer', payload);
     });
+
+    if (tempTestBtn) {
+        tempTestBtn.addEventListener('click', () => {
+            if (!selectedConfigName || !selectedConfigDetail) {
+                pushAlert({
+                    message: '请选择有效的运行配置后再发起临时测试。',
+                    title: '提示：',
+                    variant: 'warning'
+                });
+                return;
+            }
+            const payload = normalizeConfigPayload(selectedConfigDetail, selectedConfigName);
+            payload.config_name = selectedConfigName;
+            payload.name = selectedConfigName;
+            payload.urls = Array.isArray(payload.urls) ? [...payload.urls] : [];
+            socket.emit('start_temp_test', payload);
+        });
+    }
 
     stopBtn.addEventListener('click', () => {
         socket.emit('stop_consumer');
