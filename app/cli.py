@@ -35,6 +35,8 @@ def parse_args():
                       help="间隔执行时间，单位分钟，例如: 60 表示每60分钟执行一次 (默认: 无限制)")
     parser.add_argument("--auto-remove-failed-url", action="store_true",
                       help="下载失败超过重试次数后，自动从配置中移除对应URL (默认: 关闭)")
+    parser.add_argument("--auto-start", action="store_true",
+                      help="保存配置时标记为 Web 启动自启")
     parser.add_argument("--user-agent", default=None,
                       help="自定义下载请求的 User-Agent")
     parser.add_argument("--header", action="append", default=None,
@@ -121,6 +123,7 @@ def run_cli(args):
         interval=config["interval"] if config and "interval" in config else args.interval,
         config_name=args.config,
         auto_remove_failed_url=auto_remove_flag,
+        auto_start=config.get("auto_start", args.auto_start) if config else args.auto_start,
         user_agent=config.get("user_agent", args.user_agent) if config else args.user_agent,
         request_headers=config.get("request_headers", request_headers) if config else request_headers,
         url_switch_interval=config.get("url_switch_interval", args.url_switch_interval) if config else args.url_switch_interval,

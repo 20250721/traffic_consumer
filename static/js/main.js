@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
         interval: document.getElementById('interval'),
         url_strategy: document.getElementById('url-strategy'),
         auto_remove_failed_url: document.getElementById('auto-remove-failed-url'),
+        auto_start: document.getElementById('auto-start'),
         user_agent: document.getElementById('user-agent'),
         request_headers: document.getElementById('request-headers'),
         url_switch_interval: document.getElementById('url-switch-interval'),
@@ -280,6 +281,9 @@ document.addEventListener('DOMContentLoaded', (event) => {
         if (configInputs.auto_remove_failed_url) {
             configInputs.auto_remove_failed_url.checked = Boolean(config.auto_remove_failed_url);
         }
+        if (configInputs.auto_start) {
+            configInputs.auto_start.checked = Boolean(config.auto_start);
+        }
         if (configInputs.user_agent) {
             configInputs.user_agent.value = config.user_agent ?? '';
         }
@@ -323,6 +327,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
             interval: config.interval ?? null,
             config_name: name || config.config_name || null,
             auto_remove_failed_url: Boolean(config.auto_remove_failed_url),
+            auto_start: Boolean(config.auto_start),
             user_agent: config.user_agent ?? null,
             request_headers: config.request_headers ?? null,
             url_switch_interval: config.url_switch_interval ?? null,
@@ -583,12 +588,19 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     function pushAlert(data = {}) {
         if (!notificationArea) return;
+        // 区分失败、状态、提示等不同来源，避免所有通知都长成“下载失败”。
+        const variant = typeof data.variant === 'string' && data.variant.trim()
+            ? data.variant.trim()
+            : 'danger';
+        const titleText = typeof data.title === 'string' && data.title.trim()
+            ? data.title.trim()
+            : '下载失败：';
         const wrapper = document.createElement('div');
-        wrapper.className = 'alert alert-danger alert-dismissible fade show';
+        wrapper.className = `alert alert-${variant} alert-dismissible fade show`;
         wrapper.setAttribute('role', 'alert');
 
         const title = document.createElement('strong');
-        title.textContent = '下载失败：';
+        title.textContent = titleText;
 
         const message = document.createElement('span');
         const baseMessage = data.message || (data.url ? `链接 ${data.url} 已连续失败，已停止重试。` : '存在下载链接失效，已停止重试。');
@@ -748,7 +760,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
             renderUrlUsage(data.url_usage_stats);
         }
         if (data.message) {
-            pushAlert({ message: data.message });
+            pushAlert({
+                message: data.message,
+                title: '状态更新：',
+                variant: data.running ? 'success' : 'secondary'
+            });
         }
     });
 
@@ -793,7 +809,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
     });
 
     socket.on('invalid_url', (data) => {
-        pushAlert(data);
+        pushAlert({
+            ...data,
+            title: data.title || '下载失败：',
+            variant: data.variant || 'danger'
+        });
     });
 
     let countdownInterval;
@@ -834,12 +854,20 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
 
         if (data.message) {
-            pushAlert({ message: data.message });
+            pushAlert({
+                message: data.message,
+                title: '调度状态：',
+                variant: 'info'
+            });
         }
     });
 
     socket.on('error', (data = {}) => {
-        pushAlert({ message: data.message || '发生未知错误。' });
+        pushAlert({
+            message: data.message || '发生未知错误。',
+            title: '操作失败：',
+            variant: 'danger'
+        });
     });
     
     // --- 事件监听 ---
@@ -872,6 +900,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
         raw.user_agent = configInputs.user_agent ? configInputs.user_agent.value.trim() : '';
         raw.request_headers = configInputs.request_headers ? configInputs.request_headers.value.trim() : '';
+        raw.auto_start = configInputs.auto_start ? Boolean(configInputs.auto_start.checked) : false;
         raw.url_switch_interval = configInputs.url_switch_interval ? configInputs.url_switch_interval.value.trim() : '';
         raw.thread_start_delay = configInputs.thread_start_delay ? configInputs.thread_start_delay.value.trim() : '';
 
@@ -882,7 +911,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     startBtn.addEventListener('click', () => {
         if (!selectedConfigName || !selectedConfigDetail) {
-            pushAlert({ message: '请选择有效的运行配置后再启动。' });
+            pushAlert({
+                message: '请选择有效的运行配置后再启动。',
+                title: '提示：',
+                variant: 'warning'
+            });
             return;
         }
         const payload = normalizeConfigPayload(selectedConfigDetail, selectedConfigName);
@@ -902,7 +935,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
         deleteConfigBtn.addEventListener('click', () => {
             const targetName = editorActiveConfig || selectedConfigName || (configInputs.name && configInputs.name.value.trim());
             if (!targetName) {
-                pushAlert({ message: '请先选择或输入要删除的配置。' });
+                pushAlert({
+                    message: '请先选择或输入要删除的配置。',
+                    title: '提示：',
+                    variant: 'warning'
+                });
                 return;
             }
             if (!window.confirm(`确定删除配置 "${targetName}" 吗？`)) {
@@ -915,7 +952,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
     saveConfigBtn.addEventListener('click', () => {
         const config = getConfigFromForm();
         if (!config.name) {
-            pushAlert({ message: '请填写配置名称后再保存。' });
+            pushAlert({
+                message: '请填写配置名称后再保存。',
+                title: '提示：',
+                variant: 'warning'
+            });
             return;
         }
         editorActiveConfig = config.name;

@@ -66,6 +66,8 @@ def list_saved_configs() -> None:
             print(f"  Cron表达式: {config['cron_expr']}")
         if config.get("interval"):
             print(f"  间隔执行: 每 {config['interval']} 分钟")
+        if config.get("auto_start"):
+            print("  Web启动自启: 开启")
         if config.get("user_agent"):
             print(f"  User-Agent: {config['user_agent']}")
         if config.get("request_headers"):
@@ -129,3 +131,26 @@ def normalize_config_name(config_name: str) -> str:
     """统一配置名称，避免空白名称把配置文件写成奇怪的 key。"""
     text = str(config_name or "").strip()
     return text or "default"
+
+
+def find_auto_start_configs() -> list[str]:
+    """返回所有启用了自启动的配置名。
+
+    这里允许多个配置同时自启动；如果用户明确勾选了多个配置，
+    就按实际配置一并拉起，不替用户做没必要的“善意篡改”。
+    """
+    config_data = read_json(CONFIG_FILE)
+    if not config_data:
+        return []
+
+    names = []
+    for name, config in config_data.items():
+        if isinstance(config, dict) and config.get("auto_start"):
+            names.append(name)
+    return names
+
+
+def find_auto_start_config() -> Optional[str]:
+    """兼容旧调用：返回第一个自启动配置名。"""
+    names = find_auto_start_configs()
+    return names[0] if names else None

@@ -15,6 +15,7 @@ from croniter import croniter
 from colorama import Fore
 
 from app.config import STATS_FILE
+from app.config_manager import find_auto_start_configs
 from app.consumer import TrafficConsumer
 
 def _bundle_root() -> Path:
@@ -38,6 +39,7 @@ socketio = SocketIO(app, async_mode='threading')
 # 全局变量
 consumer_instance = None
 consumer_thread = None
+auto_start_instances = []
 status_thread = None
 status_thread_stop = threading.Event()
 consumer_lock = threading.RLock()
@@ -105,6 +107,7 @@ def build_consumer_kwargs(config_name, config_data, **callbacks):
         "interval": config_data.get('interval'),
         "config_name": config_name or config_data.get('config_name'),
         "auto_remove_failed_url": config_data.get('auto_remove_failed_url', False),
+        "auto_start": config_data.get('auto_start', False),
         "user_agent": config_data.get('user_agent'),
         "request_headers": config_data.get('request_headers'),
         "url_switch_interval": config_data.get('url_switch_interval'),
@@ -113,41 +116,169 @@ def build_consumer_kwargs(config_name, config_data, **callbacks):
     }
 
 
+def get_runtime_records():
+    """收集当前所有运行态消费者，自动去重。"""
+    with consumer_lock:
+        records = []
+        if consumer_instance:
+            records.append({
+                'name': consumer_instance.config_name,
+                'consumer': consumer_instance,
+                'thread': consumer_thread,
+            })
+        for item in auto_start_instances:
+            consumer = item.get('consumer')
+            if not consumer:
+                continue
+            records.append({
+                'name': item.get('name') or consumer.config_name,
+                'consumer': consumer,
+                'thread': item.get('thread'),
+            })
+
+    unique_records = []
+    seen_ids = set()
+    for record in records:
+        consumer = record.get('consumer')
+        consumer_id = id(consumer)
+        if consumer_id in seen_ids:
+            continue
+        seen_ids.add(consumer_id)
+        unique_records.append(record)
+    return unique_records
+
+
+def get_runtime_snapshot():
+    """返回运行态快照，便于状态面板和启动逻辑统一判断。"""
+    records = get_runtime_records()
+    active_records = []
+    scheduled_records = []
+
+    for record in records:
+        consumer = record.get('consumer')
+        if not consumer:
+            continue
+        if consumer.active:
+            active_records.append(record)
+        if consumer.scheduler and consumer.scheduler.running:
+            scheduled_records.append(record)
+
+    primary = (
+        active_records[0]
+        if active_records
+        else (scheduled_records[0] if scheduled_records else (records[0] if records else None))
+    )
+
+    return {
+        'records': records,
+        'active_records': active_records,
+        'scheduled_records': scheduled_records,
+        'primary': primary,
+        'thread_count': sum(record['consumer'].threads for record in records if record.get('consumer')),
+        'config_names': [record['consumer'].config_name for record in records if record.get('consumer')],
+        'has_active_download': bool(active_records),
+        'has_active_scheduler': bool(scheduled_records),
+        'has_live_thread': any(
+            record.get('thread') and record['thread'].is_alive()
+            for record in records
+        ),
+    }
+
+
+def stop_runtime_config(config_name, wait_thread=False):
+    """仅停止指定名称的运行实例，避免多自启动场景误伤其他配置。"""
+    global consumer_instance, consumer_thread
+    target_name = str(config_name or "").strip()
+    if not target_name:
+        return False
+
+    primary_consumer = None
+    primary_thread = None
+    auto_start_items = []
+
+    with consumer_lock:
+        if consumer_instance and consumer_instance.config_name == target_name:
+            primary_consumer = consumer_instance
+            primary_thread = consumer_thread
+            consumer_instance = None
+            consumer_thread = None
+
+        remaining_items = []
+        for item in auto_start_instances:
+            consumer = item.get('consumer')
+            if consumer and consumer.config_name == target_name:
+                auto_start_items.append(item)
+            else:
+                remaining_items.append(item)
+        auto_start_instances[:] = remaining_items
+
+    stopped = False
+    if primary_consumer:
+        primary_consumer.active = False
+        if primary_consumer.stop_scheduler(wait=False):
+            stopped = True
+        if wait_thread and primary_thread and primary_thread.is_alive():
+            primary_thread.join(timeout=3)
+
+    for item in auto_start_items:
+        consumer = item.get('consumer')
+        thread_item = item.get('thread')
+        if consumer:
+            consumer.active = False
+            if consumer.stop_scheduler(wait=False):
+                stopped = True
+        if wait_thread and thread_item and thread_item.is_alive():
+            thread_item.join(timeout=3)
+
+    with consumer_lock:
+        if consumer_instance is None and auto_start_instances:
+            consumer_instance = auto_start_instances[0].get('consumer')
+            consumer_thread = auto_start_instances[0].get('thread')
+        if consumer_thread and not consumer_thread.is_alive():
+            consumer_thread = None
+
+    return bool(primary_consumer or auto_start_items or stopped)
+
+
 def stop_current_consumer(wait_thread=False):
     """停止当前下载与调度器；返回是否确实停止过任务。"""
     global consumer_instance, consumer_thread
+    runtime_records = get_runtime_records()
+    with consumer_lock:
+        consumer_instance = None
+        consumer_thread = None
+        auto_start_instances.clear()
+
     stopped = False
-
-    with consumer_lock:
-        if consumer_instance:
-            if consumer_instance.active:
-                consumer_instance.active = False
+    for record in runtime_records:
+        consumer = record.get('consumer')
+        thread = record.get('thread')
+        if consumer:
+            if consumer.active:
+                consumer.active = False
                 stopped = True
-            if consumer_instance.stop_scheduler(wait=False):
+            if consumer.stop_scheduler(wait=False):
                 stopped = True
-
-        thread = consumer_thread
-
-    if wait_thread and thread and thread.is_alive():
-        thread.join(timeout=3)
-
-    with consumer_lock:
-        if consumer_thread and not consumer_thread.is_alive():
-            consumer_thread = None
+        if wait_thread and thread and thread.is_alive():
+            thread.join(timeout=3)
 
     return stopped
 
 def status_emitter():
     """定期向前端发送状态更新"""
     while not status_thread_stop.is_set():
-        if consumer_instance and consumer_instance.active:
-            with consumer_instance.lock:
-                thread_urls = consumer_instance.url_manager.get_thread_snapshot(consumer_instance.threads)
-                url_usage_snapshot = consumer_instance.url_manager.usage_snapshot()
+        snapshot = get_runtime_snapshot()
+        instance_record = snapshot['primary']
+        instance = instance_record['consumer'] if instance_record else None
+
+        if instance and instance.active:
+            with instance.lock:
+                thread_urls = instance.url_manager.get_thread_snapshot(instance.threads)
+                url_usage_snapshot = instance.url_manager.usage_snapshot()
                 total_usage = sum(url_usage_snapshot.values())
                 url_usage_stats = []
-                if consumer_instance.urls:
-                    for url in consumer_instance.urls:
+                if instance.urls:
+                    for url in instance.urls:
                         count = url_usage_snapshot.get(url, 0)
                         percentage = round((count / total_usage) * 100, 1) if total_usage else 0.0
                         url_usage_stats.append({
@@ -164,22 +295,22 @@ def status_emitter():
                             'percentage': percentage
                         })
             status = {
-                'total_bytes': consumer_instance.format_bytes(consumer_instance.total_bytes),
-                'speed': consumer_instance.format_bytes(consumer_instance.total_bytes / (time.time() - consumer_instance.start_time) if (time.time() - consumer_instance.start_time) > 0 else 0) + '/s',
-                'download_count': consumer_instance.download_count,
+                'total_bytes': instance.format_bytes(instance.total_bytes),
+                'speed': instance.format_bytes(instance.total_bytes / (time.time() - instance.start_time) if (time.time() - instance.start_time) > 0 else 0) + '/s',
+                'download_count': instance.download_count,
                 'running': True,
-                'config': consumer_instance.config_name,
-                'thread_count': consumer_instance.threads,
+                'config': instance.config_name,
+                'thread_count': instance.threads,
                 'thread_status': thread_urls,
                 'url_usage_stats': url_usage_stats
             }
             socketio.emit('status_update', status)
         else:
             socketio.emit('status_update', {
-                'running': False,
+                'running': snapshot['has_active_download'] or snapshot['has_active_scheduler'],
                 'thread_status': {},
-                'thread_count': consumer_instance.threads if consumer_instance else 0,
-                'config': consumer_instance.config_name if consumer_instance else None,
+                'thread_count': snapshot['thread_count'],
+                'config': ', '.join(snapshot['config_names']) or (consumer_instance.config_name if consumer_instance else None),
                 'url_usage_stats': []
             })
         socketio.sleep(1)
@@ -187,23 +318,29 @@ def status_emitter():
 def scheduler_status_emitter():
     """定期向前端发送调度器状态更新"""
     while not status_thread_stop.is_set():
-        with consumer_lock:
-            instance = consumer_instance
+        snapshot = get_runtime_snapshot()
+        records = snapshot['records']
 
-        if instance:
+        if records:
             next_run_time = None
-            job_details = None
-            if instance.scheduler and instance.scheduler.running:
-                job = instance.scheduler.get_job('traffic_consumer_job')
-                if job:
-                    next_run_time = job.next_run_time.isoformat() if job.next_run_time else None
-                    if instance.cron_expr:
-                        job_details = f"Cron: {instance.cron_expr}"
-                    elif instance.interval:
-                        job_details = f"Interval: {instance.interval} minutes"
+            job_details_list = []
+            current_history = []
 
-            # 合并当前实例的历史记录和stats.json中的历史记录
-            current_history = instance.stats_manager.history if instance.stats_manager.history else []
+            for record in records:
+                instance = record['consumer']
+                if instance.scheduler and instance.scheduler.running:
+                    job = instance.scheduler.get_job('traffic_consumer_job')
+                    if job and job.next_run_time:
+                        candidate_time = job.next_run_time.isoformat()
+                        if next_run_time is None or candidate_time < next_run_time:
+                            next_run_time = candidate_time
+                    if instance.cron_expr:
+                        job_details_list.append(f"{instance.config_name}: Cron {instance.cron_expr}")
+                    elif instance.interval:
+                        job_details_list.append(f"{instance.config_name}: Interval {instance.interval} 分钟")
+                if instance.stats_manager.history:
+                    current_history.extend(instance.stats_manager.history)
+
             stored_history = load_history_from_stats()
 
             # 去重并合并（优先使用当前实例的记录）
@@ -221,7 +358,7 @@ def scheduler_status_emitter():
 
             status = {
                 'next_run_time': next_run_time,
-                'job_details': job_details,
+                'job_details': ' | '.join(job_details_list) if job_details_list else None,
                 'history': unique_history[:50]  # 限制50条
             }
             socketio.emit('scheduler_status_update', status)
@@ -265,12 +402,90 @@ def handle_connect():
         status_thread = socketio.start_background_task(target=status_emitter)
         # 启动调度器状态发送任务
         socketio.start_background_task(target=scheduler_status_emitter)
+    snapshot = get_runtime_snapshot()
+    primary = snapshot['primary']['consumer'] if snapshot['primary'] else None
     emit('status_update', {
-        'running': consumer_instance.active if consumer_instance else False,
+        'running': snapshot['has_active_download'] or snapshot['has_active_scheduler'],
         'thread_status': {},
-        'thread_count': consumer_instance.threads if consumer_instance else 0,
+        'thread_count': snapshot['thread_count'] if snapshot['thread_count'] else (primary.threads if primary else 0),
+        'config': ', '.join(snapshot['config_names']) if snapshot['config_names'] else (primary.config_name if primary else None),
         'url_usage_stats': []
     })
+
+
+def launch_auto_start_configs():
+    """启动所有标记为自启动的保存配置。"""
+    global consumer_instance, consumer_thread
+    config_names = find_auto_start_configs()
+    if not config_names:
+        return False
+
+    started_names = []
+
+    for config_name in config_names:
+        config = TrafficConsumer.load_config(config_name)
+        if not config:
+            continue
+
+        if not config.get('cron_expr') and not config.get('interval'):
+            continue
+
+        def log_emitter(message, color=None, _config_name=config_name):
+            if isinstance(message, dict):
+                color = message.get('color', color)
+                message = message.get('message', '')
+            if not log_enabled:
+                return
+            plain_message = strip_ansi(message or '')
+            payload = {'message': plain_message, 'config': _config_name}
+            color_value = COLOR_TO_CSS.get(color, color)
+            if color_value:
+                payload['color'] = color_value
+            socketio.emit('log_message', payload)
+
+        def history_emitter(record, _config_name=config_name):
+            record = dict(record or {})
+            record['config'] = _config_name
+            socketio.emit('history_update', record)
+
+        def invalid_url_emitter(payload, _config_name=config_name):
+            payload = dict(payload or {})
+            payload['config'] = _config_name
+            socketio.emit('invalid_url', payload)
+
+        consumer = TrafficConsumer(
+            **build_consumer_kwargs(
+                config_name,
+                config,
+                logger=log_emitter,
+                history_callback=history_emitter,
+                invalid_url_callback=invalid_url_emitter,
+            )
+        )
+        thread = threading.Thread(target=consumer.start, name=f"consumer-{config_name}")
+        thread.daemon = True
+        thread.start()
+
+        with consumer_lock:
+            auto_start_instances.append({
+            'name': config_name,
+            'consumer': consumer,
+            'thread': thread,
+        })
+        started_names.append(config_name)
+
+        with consumer_lock:
+            if consumer_instance is None:
+                consumer_instance = consumer
+                consumer_thread = thread
+
+    if started_names:
+        socketio.emit('status_update', {
+            'running': True,
+            'message': f"已自动启动配置: {', '.join(started_names)}"
+        })
+        return True
+    return False
 
 @socketio.on('toggle_logs')
 def handle_toggle_logs(data):
@@ -283,14 +498,10 @@ def handle_start(data):
     """启动流量消耗器"""
     global consumer_instance, consumer_thread
 
-    with consumer_lock:
-        has_active_scheduler = (
-            consumer_instance
-            and consumer_instance.scheduler
-            and consumer_instance.scheduler.running
-        )
-        has_active_download = bool(consumer_instance and consumer_instance.active)
-        has_live_thread = bool(consumer_thread and consumer_thread.is_alive())
+    runtime_snapshot = get_runtime_snapshot()
+    has_active_scheduler = runtime_snapshot['has_active_scheduler']
+    has_active_download = runtime_snapshot['has_active_download']
+    has_live_thread = runtime_snapshot['has_live_thread']
 
     if has_active_download or (has_live_thread and not has_active_scheduler):
         emit('error', {'message': '流量消耗器已在运行。'})
@@ -393,14 +604,10 @@ def handle_save_config(data):
 
     # 若正在编辑当前计划，先停止旧 scheduler；仅保存配置不应保留后台旧计划继续运行。
     with consumer_lock:
-        is_current_config = (
-            consumer_instance
-            and consumer_instance.config_name == config_name
-            and consumer_instance.scheduler
-            and consumer_instance.scheduler.running
-        )
+        runtime_snapshot = get_runtime_snapshot()
+        is_current_config = config_name in runtime_snapshot['config_names']
     if is_current_config:
-        stop_current_consumer(wait_thread=True)
+        stop_runtime_config(config_name, wait_thread=True)
 
     consumer = TrafficConsumer(**build_consumer_kwargs(config_name, config_data))
     consumer.save_config()
@@ -417,9 +624,10 @@ def handle_delete_config(data):
         return
 
     with consumer_lock:
-        is_current_config = consumer_instance and consumer_instance.config_name == config_name
+        runtime_snapshot = get_runtime_snapshot()
+        is_current_config = config_name in runtime_snapshot['config_names']
     if is_current_config:
-        stop_current_consumer(wait_thread=True)
+        stop_runtime_config(config_name, wait_thread=True)
 
     deleted = TrafficConsumer.delete_config(config_name)
     if deleted:

@@ -41,6 +41,7 @@ class TrafficConsumer:
                  config_name="default", url_strategy="random", logger=None, history_callback=None,
                  invalid_url_callback=None, auto_remove_failed_url=False,
                  user_agent=None, request_headers=None,
+                 auto_start=False,
                  url_switch_interval=None, thread_start_delay=0):
         # 仅在未显式传入 urls 时才回退到默认测试链接；
         # 若用户传入空数组，表示“就是要清空配置”，绝不能偷偷补回默认值。
@@ -61,6 +62,7 @@ class TrafficConsumer:
         self.history_callback = history_callback
         self.invalid_url_callback = invalid_url_callback
         self.auto_remove_failed_url = bool(auto_remove_failed_url)
+        self.auto_start = bool(auto_start)
         self.user_agent = self._clean_optional_header_value(user_agent)
         self.request_headers = self._normalize_request_headers(request_headers)
         self.url_switch_interval = self._coerce_positive_number(url_switch_interval)
@@ -432,6 +434,7 @@ class TrafficConsumer:
             "traffic_limit": self.traffic_limit,
             "interval": self.interval,
             "auto_remove_failed_url": self.auto_remove_failed_url,
+            "auto_start": self.auto_start,
             "user_agent": self.user_agent,
             "request_headers": self.request_headers,
             "url_switch_interval": self.url_switch_interval,
