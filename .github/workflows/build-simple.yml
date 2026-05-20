@@ -57,18 +57,25 @@ jobs:
       with:
         platforms: arm64
 
-    - name: Build in ARM64 Ubuntu 24.04 Container
+    - name: Build ARM64 executable
       uses: addnab/docker-run-action@v3
       with:
-        # 24.04 自带 python3.12，无需PPA
-        image: arm64v8/ubuntu:24.04
+        image: ubuntu:24.04
         options: --platform linux/arm64
         run: |
-          python3 -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          set -e
+          apt-get update -y
+          apt-get install -y python3 python3-pip python3-venv git
           
-          pyinstaller --onefile --clean --noconfirm \
+          # 升级 pip
+          python3 -m pip install --upgrade pip
+          # 安装项目依赖
+          python3 -m pip install -r requirements.txt
+          # 安装 pyinstaller
+          python3 -m pip install pyinstaller
+          
+          # 开始打包
+          python3 -m PyInstaller --onefile --clean --noconfirm \
             --name traffic_consumer_Linux_arm64 \
             --hidden-import=engineio.async_drivers.threading \
             --add-data "templates:templates" \
@@ -79,6 +86,7 @@ jobs:
       with:
         name: traffic_consumer_Linux_arm64
         path: dist/traffic_consumer_Linux_arm64
+
 
 
   # 原有：构建并推送多架构 Docker 镜像（完全保留不动）
