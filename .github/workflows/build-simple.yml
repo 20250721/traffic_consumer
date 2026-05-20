@@ -64,9 +64,6 @@ jobs:
         image: arm64v8/ubuntu:24.04
         options: --platform linux/arm64
         run: |
-          apt-get update -y
-          apt-get install -y python3.12 python3-pip git
-          
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
