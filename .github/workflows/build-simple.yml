@@ -3,11 +3,11 @@ name: Build, Release and Push Docker Image
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
+  tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
-  # 原有：x86_64 架构 Windows/macOS/Ubuntu 可执行文件
+  # 原有：x86_64 架构 Windows/macOS/Ubuntu 可执行文件（完全保留不动）
   build-executables:
     name: Build Executable for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -46,39 +46,37 @@ jobs:
         name: traffic_consumer_${{ runner.os }}
         path: dist/traffic_consumer_${{ runner.os }}${{ runner.os == 'Windows' && '.exe' || '' }}
 
-  # 新增：Linux AArch64 (arm64) 架构 → 适配安卓/ARM 设备
+  # 修复版：Linux AArch64 真架构打包（QEMU 容器原生编译）
   build-executable-linux-arm64:
     name: Build Executable for Linux AArch64 (Android Compatible)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v4
+    # 启用 QEMU 支持 arm64 模拟
+    - name: Setup QEMU
+      uses: docker/setup-qemu-action@v3
       with:
-        python-version: '3.12'
+        platforms: arm64
 
-    # 安装 ARM64 交叉编译工具链（用于打包安卓/Linux ARM 可执行文件）
-    - name: Install AArch64 cross-compiler
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
-
-    # 交叉编译 Linux ARM64 可执行文件（安卓直接运行）
-    - name: Build Linux AArch64 executable
-      run: |
-        pyinstaller --onefile --clean --noconfirm \
-          --name traffic_consumer_Linux_arm64 \
-          --hidden-import=engineio.async_drivers.threading \
-          --add-data "templates:templates" \
-          --target-arch aarch64 \
-          traffic_consumer.py
+    # 在 arm64 容器内原生打包，产出纯正 aarch64 二进制
+    - name: Build in ARM64 Ubuntu Container
+      uses: addnab/docker-run-action@v3
+      with:
+        image: arm64v8/ubuntu:22.04
+        options: --platform linux/arm64 -v ${{ github.workspace }}:/app -w /app
+        run: |
+          apt-get update -y
+          apt-get install -y python3.12 python3-pip git
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          
+          pyinstaller --onefile --clean --noconfirm \
+            --name traffic_consumer_Linux_arm64 \
+            --hidden-import=engineio.async_drivers.threading \
+            --add-data "templates:templates" \
+            traffic_consumer.py
 
     - name: Upload ARM64 artifact
       uses: actions/upload-artifact@v4
@@ -86,7 +84,7 @@ jobs:
         name: traffic_consumer_Linux_arm64
         path: dist/traffic_consumer_Linux_arm64
 
-  # 原有：构建并推送多架构 Docker 镜像到 GHCR
+  # 原有：构建并推送多架构 Docker 镜像（完全保留不动）
   build-and-push-docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
@@ -120,19 +118,17 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/traffic_consumer:${{ github.ref_name }}
           provenance: false
 
-  # 修复版：创建 Release，解决 artifact 下载失败问题
+  # 原有：自动创建 Release（完全保留，路径全部兼容）
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-executables, build-executable-linux-arm64, build-and-push-docker]
     runs-on: ubuntu-latest
     steps:
-    # 核心修复：只下载程序文件，排除Docker缓存文件，解决下载重试失败
     - name: Download required artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
-        pattern: traffic_consumer_*  # 只下载我们编译的可执行文件
-        exclude: "*.dockerbuild"     # 排除导致报错的Docker临时文件
+        pattern: traffic_consumer_*
 
     - name: List downloaded files
       run: ls -R artifacts
