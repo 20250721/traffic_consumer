@@ -46,45 +46,31 @@ jobs:
         name: traffic_consumer_${{ runner.os }}
         path: dist/traffic_consumer_${{ runner.os }}${{ runner.os == 'Windows' && '.exe' || '' }}
 
-  # 修复版：Linux AArch64 真架构打包（QEMU 容器原生编译）
-  
-    # 修复版：Linux AArch64 真架构打包（兼容Python3.12）
   build-executable-linux-arm64:
     name: Build Executable for Linux AArch64 (Android Compatible)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    # 启用 QEMU 支持 arm64 模拟
     - name: Setup QEMU
       uses: docker/setup-qemu-action@v3
       with:
         platforms: arm64
 
-    # ARM64 容器内安装 Python3.12 + 打包
-    - name: Build in ARM64 Ubuntu Container
+    - name: Build in ARM64 Ubuntu 24.04 Container
       uses: addnab/docker-run-action@v3
       with:
-        image: arm64v8/ubuntu:22.04
+        # 24.04 自带 python3.12，无需PPA
+        image: arm64v8/ubuntu:24.04
         options: --platform linux/arm64
         run: |
           apt-get update -y
-          apt-get install -y software-properties-common
-          # 加入 deadsnakes 源安装 Python3.12
-          add-apt-repository ppa:deadsnakes/ppa -y
-          apt-get update -y
-          # 安装 Python3.12 及依赖
-          apt-get install -y python3.12 python3.12-dev python3-pip git
-          # 切换默认 python3 为 3.12
-          ln -sf /usr/bin/python3.12 /usr/bin/python3
-          ln -sf /usr/bin/pip3 /usr/bin/pip
+          apt-get install -y python3.12 python3-pip git
           
-          # 安装项目依赖 & PyInstaller
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
           
-          # 打包 ARM64 可执行文件
           pyinstaller --onefile --clean --noconfirm \
             --name traffic_consumer_Linux_arm64 \
             --hidden-import=engineio.async_drivers.threading \
